@@ -24,6 +24,8 @@ The page auto-refreshes every 60 s. Endpoints:
 - `GET /api/status` — JSON of the latest results
 - `GET /api/uptime` — per-service uptime % over 24 h / 7 d / 30 d
 - `GET /api/history?service=<name>&limit=200` — recent raw history rows for one service
+- `GET /api/cache` — latest snapshot of every cache service (hit/miss counts, connections, hit rate)
+- `GET /api/cache/history?service=<name>&since_seconds=86400&max_points=200` — down-sampled cache time series
 - `GET /healthz` — liveness for Rancher / Docker
 - `POST /refresh` — force an immediate re-probe of every service
 
@@ -42,6 +44,22 @@ ORDER BY ts DESC;
 Rows older than `HISTORY_RETENTION_DAYS` are pruned on startup and once a day. Set `HISTORY_RETENTION_DAYS=0` to keep forever.
 
 The status strip on the page renders the most recent `HISTORY_BUCKETS` buckets (default 72 hours = 3 days), oldest left. Reduction rule per bucket: any `down` → bucket is red; otherwise any `up` → bucket is green; otherwise grey (no data).
+
+## Cache services
+
+Caches running [virtualflybrain/owl_cache](https://github.com/VirtualFlyBrain/owl_cache) ≥1.1.22 expose `/status` with JSON describing the nginx cache hit/miss counters and connection breakdown. List them under `cache_services:` in `config/services.yml`:
+
+```yaml
+cache_services:
+  - name: VFB3 cache (v3-cached.virtualflybrain.org)
+    status_url: https://v3-cached.virtualflybrain.org/status
+    fronts: vfbquery.virtualflybrain.org
+  - name: IIP3D cache (iip3d.virtualflybrain.org)
+    status_url: https://iip3d.virtualflybrain.org/status
+    verify_tls: false
+```
+
+Each entry is probed on the same schedule as the regular endpoints; the parsed metrics go into the `cache_history` table. The page renders a card per cache with the latest snapshot plus two inline sparklines: active connections (load proxy) and Δ cache_total per check (request-rate proxy). Cache endpoints whose `/status` is unreachable still record an error row, which makes it easy to see when older `1.1.20` images get upgraded.
 
 ## Configuration
 

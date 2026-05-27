@@ -97,6 +97,48 @@ class CheckResult:
     checked_at: str | None = None  # ISO timestamp
 
 
+@dataclass
+class CacheServiceSpec:
+    """A caching service whose /status endpoint reports cache counters + connections.
+
+    Shape: virtualflybrain/owl_cache >=1.1.22 — JSON with health{}, upstream{},
+    cache{total,hit,miss}, connections{active,reading,writing,waiting}.
+    """
+
+    name: str
+    status_url: str
+    fronts: str | None = None  # human-readable label of the upstream
+    timeout: float = 8.0
+    verify_tls: bool = True
+
+
+@dataclass
+class CacheCheck:
+    name: str
+    status_url: str
+    ok: bool
+    checked_at: str
+    error: str | None = None
+    nginx_healthy: bool | None = None
+    upstream_healthy: bool | None = None
+    upstream_host: str | None = None
+    upstream_port: int | None = None
+    cache_total: int | None = None
+    cache_hit: int | None = None
+    cache_miss: int | None = None
+    conn_active: int | None = None
+    conn_reading: int | None = None
+    conn_writing: int | None = None
+    conn_waiting: int | None = None
+    raw: str | None = None
+
+    @property
+    def hit_rate(self) -> float | None:
+        if self.cache_total and self.cache_total > 0 and self.cache_hit is not None:
+            return 100.0 * self.cache_hit / self.cache_total
+        return None
+
+
 # ----- config loading ---------------------------------------------------------
 
 
@@ -123,6 +165,24 @@ def load_services(path: Path) -> list[ServiceSpec]:
             )
     log.info("loaded %d services from %s", len(services), path)
     return services
+
+
+def load_cache_services(path: Path) -> list[CacheServiceSpec]:
+    raw = yaml.safe_load(path.read_text())
+    out: list[CacheServiceSpec] = []
+    for svc in raw.get("cache_services", []) or []:
+        out.append(
+            CacheServiceSpec(
+                name=svc["name"],
+                status_url=svc["status_url"],
+                fronts=svc.get("fronts"),
+                timeout=float(svc.get("timeout", 8.0)),
+                verify_tls=bool(svc.get("verify_tls", True)),
+            )
+        )
+    if out:
+        log.info("loaded %d cache services from %s", len(out), path)
+    return out
 
 
 def rancher_server_specs() -> list[ServiceSpec]:
@@ -216,6 +276,105 @@ async def probe_all(services: Iterable[ServiceSpec]) -> list[CheckResult]:
         return await asyncio.gather(*tasks)
 
 
+async def probe_cache(
+    client_verify: httpx.AsyncClient,
+    client_no_verify: httpx.AsyncClient,
+    svc: CacheServiceSpec,
+) -> CacheCheck:
+    """Fetch /status JSON. Return a CacheCheck — never raises."""
+    started = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    client = client_verify if svc.verify_tls else client_no_verify
+    try:
+        resp = await client.get(
+            svc.status_url,
+            timeout=svc.timeout,
+            follow_redirects=True,
+            headers={"User-Agent": USER_AGENT, "Accept": "application/json"},
+        )
+        if resp.status_code != 200:
+            return CacheCheck(
+                name=svc.name,
+                status_url=svc.status_url,
+                ok=False,
+                checked_at=started,
+                error=f"HTTP {resp.status_code}",
+            )
+        try:
+            data = resp.json()
+        except Exception as exc:  # noqa: BLE001
+            return CacheCheck(
+                name=svc.name,
+                status_url=svc.status_url,
+                ok=False,
+                checked_at=started,
+                error=f"invalid JSON: {exc}",
+            )
+        health = data.get("health") or {}
+        upstream = data.get("upstream") or {}
+        cache = data.get("cache") or {}
+        conns = data.get("connections") or {}
+        return CacheCheck(
+            name=svc.name,
+            status_url=svc.status_url,
+            ok=True,
+            checked_at=data.get("updated_at") or started,
+            nginx_healthy=_to_bool(health.get("nginx")),
+            upstream_healthy=_to_bool(health.get("upstream")),
+            upstream_host=upstream.get("host"),
+            upstream_port=_to_int(upstream.get("port")),
+            cache_total=_to_int(cache.get("total")),
+            cache_hit=_to_int(cache.get("hit")),
+            cache_miss=_to_int(cache.get("miss")),
+            conn_active=_to_int(conns.get("active")),
+            conn_reading=_to_int(conns.get("reading")),
+            conn_writing=_to_int(conns.get("writing")),
+            conn_waiting=_to_int(conns.get("waiting")),
+            raw=resp.text,
+        )
+    except httpx.TimeoutException:
+        return CacheCheck(
+            name=svc.name,
+            status_url=svc.status_url,
+            ok=False,
+            checked_at=started,
+            error=f"timeout after {svc.timeout}s",
+        )
+    except Exception as exc:  # noqa: BLE001
+        return CacheCheck(
+            name=svc.name,
+            status_url=svc.status_url,
+            ok=False,
+            checked_at=started,
+            error=f"{type(exc).__name__}: {exc}",
+        )
+
+
+def _to_bool(v: Any) -> bool | None:
+    if v is None:
+        return None
+    if isinstance(v, bool):
+        return v
+    if isinstance(v, str):
+        return v.lower() in ("true", "1", "yes", "y")
+    return bool(v)
+
+
+def _to_int(v: Any) -> int | None:
+    if v is None:
+        return None
+    try:
+        return int(v)
+    except (TypeError, ValueError):
+        return None
+
+
+async def probe_all_caches(services: Iterable[CacheServiceSpec]) -> list[CacheCheck]:
+    if not services:
+        return []
+    async with httpx.AsyncClient(verify=True) as cv, httpx.AsyncClient(verify=False) as cnv:
+        return await asyncio.gather(*[probe_cache(cv, cnv, s) for s in services])
+
+
 # ----- history storage --------------------------------------------------------
 
 
@@ -235,6 +394,28 @@ class History:
     );
     CREATE INDEX IF NOT EXISTS idx_service_ts ON history (service, ts);
     CREATE INDEX IF NOT EXISTS idx_ts ON history (ts);
+
+    CREATE TABLE IF NOT EXISTS cache_history (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        service TEXT NOT NULL,
+        ts INTEGER NOT NULL,
+        checked_at TEXT NOT NULL,
+        ok INTEGER NOT NULL,
+        nginx_healthy INTEGER,
+        upstream_healthy INTEGER,
+        upstream_host TEXT,
+        upstream_port INTEGER,
+        cache_total INTEGER,
+        cache_hit INTEGER,
+        cache_miss INTEGER,
+        conn_active INTEGER,
+        conn_reading INTEGER,
+        conn_writing INTEGER,
+        conn_waiting INTEGER,
+        error TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_cache_service_ts ON cache_history (service, ts);
+    CREATE INDEX IF NOT EXISTS idx_cache_ts ON cache_history (ts);
     """
 
     def __init__(self, path: Path | None) -> None:
@@ -290,10 +471,128 @@ class History:
         cutoff = int(time.time()) - retention_days * 86400
         cur = self._conn.cursor()
         cur.execute("DELETE FROM history WHERE ts < ?", (cutoff,))
-        removed = cur.rowcount or 0
-        if removed:
-            log.info("history: pruned %d rows older than %dd", removed, retention_days)
-        return removed
+        removed_h = cur.rowcount or 0
+        cur.execute("DELETE FROM cache_history WHERE ts < ?", (cutoff,))
+        removed_c = cur.rowcount or 0
+        if removed_h or removed_c:
+            log.info(
+                "history: pruned %d service rows + %d cache rows older than %dd",
+                removed_h, removed_c, retention_days,
+            )
+        return removed_h + removed_c
+
+    def record_cache(self, results: Iterable[CacheCheck]) -> None:
+        if self._conn is None:
+            return
+        rows = [
+            (
+                r.name,
+                int(time.time()),
+                r.checked_at,
+                1 if r.ok else 0,
+                None if r.nginx_healthy is None else (1 if r.nginx_healthy else 0),
+                None if r.upstream_healthy is None else (1 if r.upstream_healthy else 0),
+                r.upstream_host,
+                r.upstream_port,
+                r.cache_total,
+                r.cache_hit,
+                r.cache_miss,
+                r.conn_active,
+                r.conn_reading,
+                r.conn_writing,
+                r.conn_waiting,
+                r.error,
+            )
+            for r in results
+        ]
+        cur = self._conn.cursor()
+        try:
+            cur.execute("BEGIN")
+            cur.executemany(
+                "INSERT INTO cache_history "
+                "(service, ts, checked_at, ok, nginx_healthy, upstream_healthy, "
+                " upstream_host, upstream_port, cache_total, cache_hit, cache_miss, "
+                " conn_active, conn_reading, conn_writing, conn_waiting, error) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                rows,
+            )
+            cur.execute("COMMIT")
+        except Exception:
+            cur.execute("ROLLBACK")
+            raise
+
+    def cache_series(
+        self, service: str, since_seconds: int, max_points: int = 96
+    ) -> list[dict[str, Any]]:
+        """Return up to `max_points` evenly-down-sampled rows for the given cache service.
+
+        Newest first becomes inconvenient for line drawing, so we return oldest-first.
+        """
+        if self._conn is None:
+            return []
+        cutoff = int(time.time()) - since_seconds
+        cur = self._conn.execute(
+            "SELECT ts, ok, nginx_healthy, upstream_healthy, "
+            "cache_total, cache_hit, cache_miss, "
+            "conn_active, conn_reading, conn_writing, conn_waiting "
+            "FROM cache_history WHERE service = ? AND ts >= ? ORDER BY ts ASC",
+            (service, cutoff),
+        )
+        rows = cur.fetchall()
+        if not rows:
+            return []
+        # Even down-sample for the chart — never more than max_points.
+        step = max(1, len(rows) // max_points)
+        sampled = rows[::step]
+        return [
+            {
+                "ts": ts,
+                "ok": bool(ok),
+                "nginx_healthy": (None if nh is None else bool(nh)),
+                "upstream_healthy": (None if uh is None else bool(uh)),
+                "cache_total": ct,
+                "cache_hit": ch,
+                "cache_miss": cm,
+                "conn_active": ca,
+                "conn_reading": cr,
+                "conn_writing": cw,
+                "conn_waiting": cwt,
+            }
+            for ts, ok, nh, uh, ct, ch, cm, ca, cr, cw, cwt in sampled
+        ]
+
+    def cache_latest(self, service: str) -> dict[str, Any] | None:
+        if self._conn is None:
+            return None
+        cur = self._conn.execute(
+            "SELECT ts, checked_at, ok, nginx_healthy, upstream_healthy, "
+            "upstream_host, upstream_port, cache_total, cache_hit, cache_miss, "
+            "conn_active, conn_reading, conn_writing, conn_waiting, error "
+            "FROM cache_history WHERE service = ? ORDER BY ts DESC LIMIT 1",
+            (service,),
+        )
+        row = cur.fetchone()
+        if not row:
+            return None
+        (ts, checked_at, ok, nh, uh, uhost, uport, ct, ch, cm, ca, cr, cw, cwt, err) = row
+        return {
+            "ts": ts,
+            "checked_at": checked_at,
+            "ok": bool(ok),
+            "nginx_healthy": (None if nh is None else bool(nh)),
+            "upstream_healthy": (None if uh is None else bool(uh)),
+            "upstream_host": uhost,
+            "upstream_port": uport,
+            "cache_total": ct,
+            "cache_hit": ch,
+            "cache_miss": cm,
+            "conn_active": ca,
+            "conn_reading": cr,
+            "conn_writing": cw,
+            "conn_waiting": cwt,
+            "error": err,
+            "hit_rate": (100.0 * ch / ct) if (ct and ch is not None) else None,
+        }
 
     def uptime_pct(self, service: str, since_seconds: int) -> tuple[float | None, int]:
         """Return (uptime_pct, total_known_rows) over the last `since_seconds`.
@@ -378,9 +677,16 @@ class History:
 
 
 class State:
-    def __init__(self, services: list[ServiceSpec], history: History | None = None):
+    def __init__(
+        self,
+        services: list[ServiceSpec],
+        cache_services: list[CacheServiceSpec] | None = None,
+        history: History | None = None,
+    ):
         self.services = services
+        self.cache_services = cache_services or []
         self.results: dict[str, CheckResult] = {}
+        self.cache_results: dict[str, CacheCheck] = {}
         self.last_run: str | None = None
         self.running = False
         self.history = history or History(None)
@@ -419,19 +725,34 @@ class State:
         async with self._lock:
             self.running = True
             try:
-                log.info("probing %d services", len(self.services))
-                results = await probe_all(self.services)
+                log.info(
+                    "probing %d services + %d caches",
+                    len(self.services),
+                    len(self.cache_services),
+                )
+                results, cache_results = await asyncio.gather(
+                    probe_all(self.services),
+                    probe_all_caches(self.cache_services),
+                )
                 for r in results:
                     self.results[r.name] = r
+                for cr in cache_results:
+                    self.cache_results[cr.name] = cr
                 self.last_run = datetime.now(timezone.utc).isoformat(timespec="seconds")
                 self.persist()
                 if self.history.enabled:
                     try:
                         self.history.record(results)
+                        if cache_results:
+                            self.history.record_cache(cache_results)
                     except Exception as exc:  # noqa: BLE001
                         log.warning("history write failed: %s", exc)
                 up = sum(1 for r in results if r.status == "up")
-                log.info("checks complete: %d/%d up", up, len(results))
+                cache_ok = sum(1 for c in cache_results if c.ok)
+                log.info(
+                    "checks complete: %d/%d up, %d/%d caches ok",
+                    up, len(results), cache_ok, len(cache_results),
+                )
             finally:
                 self.running = False
 
@@ -442,9 +763,10 @@ class State:
 @asynccontextmanager
 async def lifespan(app: FastAPI):  # type: ignore[no-untyped-def]
     services = load_services(CONFIG_PATH) + rancher_server_specs()
+    cache_services = load_cache_services(CONFIG_PATH)
     history = History(HISTORY_DB)
     history.prune(HISTORY_RETENTION_DAYS)
-    state = State(services, history=history)
+    state = State(services, cache_services=cache_services, history=history)
     state.load_from_disk()
     app.state.state = state
 
@@ -497,6 +819,35 @@ def _service_row(state: State, svc: ServiceSpec) -> dict[str, Any]:
     }
 
 
+def _cache_chart_window_seconds() -> int:
+    # Show roughly the same horizon as the status strip by default.
+    return HISTORY_BUCKETS * HISTORY_BUCKET_SECONDS
+
+
+def _cache_card(state: State, svc: CacheServiceSpec) -> dict[str, Any]:
+    latest = state.cache_results.get(svc.name)
+    series = state.history.cache_series(svc.name, _cache_chart_window_seconds(), max_points=120)
+    # Pre-compute SVG-ready normalised points for conn_active (the load indicator)
+    # and cache_total *delta per step* (request-rate proxy).
+    active_pts = [(r["ts"], r["conn_active"]) for r in series if r["conn_active"] is not None]
+    rate_pts: list[tuple[int, int]] = []
+    if len(series) >= 2:
+        prev_total = None
+        for r in series:
+            t = r["cache_total"]
+            if prev_total is not None and t is not None:
+                delta = max(0, t - prev_total)
+                rate_pts.append((r["ts"], delta))
+            prev_total = t
+    return {
+        "spec": svc,
+        "latest": latest,
+        "series": series,
+        "active_pts": active_pts,
+        "rate_pts": rate_pts,
+    }
+
+
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request) -> HTMLResponse:
     state: State = request.app.state.state
@@ -506,6 +857,7 @@ async def index(request: Request) -> HTMLResponse:
     total = len(state.services)
     up = sum(1 for r in state.results.values() if r.status == "up")
     down = sum(1 for r in state.results.values() if r.status == "down")
+    cache_cards = [_cache_card(state, s) for s in state.cache_services]
     return templates.TemplateResponse(
         request,
         "index.html",
@@ -520,6 +872,7 @@ async def index(request: Request) -> HTMLResponse:
             "history_enabled": state.history.enabled,
             "history_buckets": HISTORY_BUCKETS,
             "history_bucket_seconds": HISTORY_BUCKET_SECONDS,
+            "cache_cards": cache_cards,
         },
     )
 
@@ -555,6 +908,59 @@ async def api_history(request: Request, service: str, limit: int = 200) -> JSONR
         {
             "service": service,
             "rows": state.history.recent(service, limit=max(1, min(limit, 5000))),
+        }
+    )
+
+
+@app.get("/api/cache")
+async def api_cache(request: Request) -> JSONResponse:
+    """Latest snapshot per cache service."""
+    state: State = request.app.state.state
+    out = []
+    for svc in state.cache_services:
+        latest = state.cache_results.get(svc.name)
+        out.append(
+            {
+                "service": svc.name,
+                "status_url": svc.status_url,
+                "fronts": svc.fronts,
+                "ok": latest.ok if latest else None,
+                "checked_at": latest.checked_at if latest else None,
+                "error": latest.error if latest else None,
+                "nginx_healthy": latest.nginx_healthy if latest else None,
+                "upstream_healthy": latest.upstream_healthy if latest else None,
+                "upstream_host": latest.upstream_host if latest else None,
+                "upstream_port": latest.upstream_port if latest else None,
+                "cache_total": latest.cache_total if latest else None,
+                "cache_hit": latest.cache_hit if latest else None,
+                "cache_miss": latest.cache_miss if latest else None,
+                "hit_rate": latest.hit_rate if latest else None,
+                "conn_active": latest.conn_active if latest else None,
+                "conn_reading": latest.conn_reading if latest else None,
+                "conn_writing": latest.conn_writing if latest else None,
+                "conn_waiting": latest.conn_waiting if latest else None,
+            }
+        )
+    return JSONResponse({"caches": out})
+
+
+@app.get("/api/cache/history")
+async def api_cache_history(
+    request: Request, service: str, since_seconds: int = 86400, max_points: int = 200
+) -> JSONResponse:
+    """Down-sampled time series for one cache service. Oldest first."""
+    state: State = request.app.state.state
+    if not state.history.enabled:
+        raise HTTPException(status_code=404, detail="history is disabled")
+    if not any(c.name == service for c in state.cache_services):
+        raise HTTPException(status_code=404, detail=f"unknown cache service: {service}")
+    return JSONResponse(
+        {
+            "service": service,
+            "since_seconds": since_seconds,
+            "series": state.history.cache_series(
+                service, max(60, since_seconds), max_points=max(2, min(max_points, 2000))
+            ),
         }
     )
 

@@ -131,6 +131,55 @@
       .svc-err    { grid-area: err; }
     }
 
+    .cache-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(380px, 1fr));
+      gap: 0.8rem;
+    }
+    .cache-card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 0.8rem 0.9rem;
+      display: flex;
+      flex-direction: column;
+      gap: 0.7rem;
+    }
+    .cache-card header {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 0.6rem;
+    }
+    .cache-name { color: inherit; text-decoration: none; font-weight: 500; }
+    .cache-name:hover { text-decoration: underline; }
+    .cache-fronts { color: var(--muted); font-size: 0.78rem; margin-top: 0.1rem; }
+    .cache-stats {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 0.4rem 0.6rem;
+      margin: 0;
+    }
+    .cache-stats div { margin: 0; }
+    .cache-stats dt {
+      font-size: 0.7rem;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      margin: 0;
+    }
+    .cache-stats dd {
+      font-size: 0.95rem;
+      font-variant-numeric: tabular-nums;
+      margin: 0;
+    }
+    .cache-chart { display: flex; flex-direction: column; gap: 0.2rem; }
+    .chart-label { font-size: 0.72rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
+    .sparkline { width: 100%; height: 42px; display: block; }
+    .sparkline-empty, .sparkline-meta { font-size: 0.72rem; color: var(--muted); }
+    .sparkline-meta { float: right; }
+    .cache-err { color: var(--muted); font-size: 0.85rem; padding: 0.4rem 0; }
+
     footer { margin-top: 3rem; color: var(--muted); font-size: 0.8rem; text-align: center; }
     footer a { color: inherit; }
   </style>
@@ -172,6 +221,101 @@
       {%- if p is none -%}—{%- else -%}{{ "%.2f"|format(p) }}%{%- endif -%}
     {%- endmacro %}
 
+    {% macro fmt_int(n) -%}
+      {%- if n is none -%}—{%- else -%}{{ "{:,}".format(n) }}{%- endif -%}
+    {%- endmacro %}
+
+    {%- macro sparkline(points, width=240, height=40, color="var(--up)", fill="rgba(31,157,85,0.15)") -%}
+      {%- if not points or points|length < 2 -%}
+        <span class="sparkline-empty">no data yet</span>
+      {%- else -%}
+        {%- set xs = points|map(attribute=0)|list -%}
+        {%- set ys = points|map(attribute=1)|list -%}
+        {%- set xmin = xs|min -%}
+        {%- set xmax = xs|max -%}
+        {%- set ymin = 0 -%}
+        {%- set ymax = ys|max -%}
+        {%- set xrange = (xmax - xmin) or 1 -%}
+        {%- set yrange = (ymax - ymin) or 1 -%}
+        <svg class="sparkline" viewBox="0 0 {{ width }} {{ height }}" width="{{ width }}" height="{{ height }}" preserveAspectRatio="none" role="img">
+          {%- set ns = namespace(path="") -%}
+          {%- set ns2 = namespace(area="") -%}
+          {%- for x, y in points -%}
+            {%- set px = ((x - xmin) / xrange) * width -%}
+            {%- set py = height - ((y - ymin) / yrange) * (height - 2) - 1 -%}
+            {%- if loop.first -%}
+              {%- set ns.path = "M %.1f %.1f"|format(px, py) -%}
+              {%- set ns2.area = "M %.1f %.1f"|format(px, height) ~ " L %.1f %.1f"|format(px, py) -%}
+            {%- else -%}
+              {%- set ns.path = ns.path ~ " L %.1f %.1f"|format(px, py) -%}
+              {%- set ns2.area = ns2.area ~ " L %.1f %.1f"|format(px, py) -%}
+            {%- endif -%}
+            {%- if loop.last -%}
+              {%- set ns2.area = ns2.area ~ " L %.1f %.1f"|format(px, height) ~ " Z" -%}
+            {%- endif -%}
+          {%- endfor -%}
+          <path d="{{ ns2.area }}" fill="{{ fill }}" stroke="none"/>
+          <path d="{{ ns.path }}" fill="none" stroke="{{ color }}" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round"/>
+        </svg>
+        <span class="sparkline-meta">peak {{ ymax }}, now {{ ys[-1] }}</span>
+      {%- endif -%}
+    {%- endmacro %}
+
+    {% if cache_cards %}
+      <section>
+        <h2>Caching services — load over time</h2>
+        <div class="cache-grid">
+          {% for c in cache_cards %}
+            {% set spec = c.spec %}
+            {% set l = c.latest %}
+            <article class="cache-card">
+              <header>
+                <div>
+                  <a class="cache-name" href="{{ spec.status_url }}" rel="noopener noreferrer" target="_blank">{{ spec.name }}</a>
+                  {% if spec.fronts %}<div class="cache-fronts">in front of {{ spec.fronts }}</div>{% endif %}
+                </div>
+                {% if l and l.ok %}
+                  <span class="pill {{ 'up' if l.upstream_healthy else 'down' }}">{{ 'ok' if l.upstream_healthy else 'upstream down' }}</span>
+                {% elif l %}
+                  <span class="pill down" title="{{ l.error or 'no /status' }}">no /status</span>
+                {% else %}
+                  <span class="pill unknown">no data</span>
+                {% endif %}
+              </header>
+
+              {% if l and l.ok %}
+                <dl class="cache-stats">
+                  <div><dt>active</dt><dd>{{ fmt_int(l.conn_active) }}</dd></div>
+                  <div><dt>reading</dt><dd>{{ fmt_int(l.conn_reading) }}</dd></div>
+                  <div><dt>writing</dt><dd>{{ fmt_int(l.conn_writing) }}</dd></div>
+                  <div><dt>waiting</dt><dd>{{ fmt_int(l.conn_waiting) }}</dd></div>
+                  <div><dt>total req</dt><dd>{{ fmt_int(l.cache_total) }}</dd></div>
+                  <div><dt>hits</dt><dd>{{ fmt_int(l.cache_hit) }}</dd></div>
+                  <div><dt>misses</dt><dd>{{ fmt_int(l.cache_miss) }}</dd></div>
+                  <div>
+                    <dt>hit rate</dt>
+                    <dd>{% if l.hit_rate is not none %}{{ "%.1f"|format(l.hit_rate) }}%{% else %}—{% endif %}</dd>
+                  </div>
+                </dl>
+                <div class="cache-chart">
+                  <div class="chart-label">Active connections</div>
+                  {{ sparkline(c.active_pts, width=320, height=42) }}
+                </div>
+                <div class="cache-chart">
+                  <div class="chart-label">Requests per check (Δ total)</div>
+                  {{ sparkline(c.rate_pts, width=320, height=42, color="var(--down)", fill="rgba(192,57,43,0.12)") }}
+                </div>
+              {% else %}
+                <div class="cache-err">
+                  {% if l and l.error %}{{ l.error }}{% else %}/status not reachable — likely an owl_cache image older than 1.1.22. Upgrade to expose cache metrics.{% endif %}
+                </div>
+              {% endif %}
+            </article>
+          {% endfor %}
+        </div>
+      </section>
+    {% endif %}
+
     {% for group_name, rows in groups.items() %}
       <section>
         <h2>{{ group_name }}</h2>
@@ -209,6 +353,7 @@
     <footer>
       <a href="/api/status">/api/status</a> ·
       <a href="/api/uptime">/api/uptime</a> ·
+      <a href="/api/cache">/api/cache</a> ·
       <a href="/healthz">/healthz</a> ·
       <a href="https://github.com/VirtualFlyBrain/vfb-status">source</a>
     </footer>

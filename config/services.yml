@@ -133,3 +133,20 @@ groups:
       - name: upload.virtualflybrain.org
         url: https://upload.virtualflybrain.org/
         expect_status: [200, 301, 302, 401, 403, 404]
+
+# Caching services — each exposes /status (JSON) from virtualflybrain/owl_cache
+# >=1.1.22. We probe /status on the same schedule and store the cache counters
+# + connection stats in the `cache_history` SQLite table for the load-over-time
+# chart. Endpoints on an older image (1.1.20) return 404 on /status; that's
+# recorded as an error row so the upgrade trail is visible too.
+cache_services:
+  - name: VFB3 cache (v3-cached.virtualflybrain.org)
+    status_url: https://v3-cached.virtualflybrain.org/status
+    fronts: vfbquery.virtualflybrain.org
+  - name: Owlery cache (owl.virtualflybrain.org)
+    status_url: https://owl.virtualflybrain.org/status
+    fronts: owlery (Nico-Pipeline/vfb-owlery)
+  - name: IIP3D cache (iip3d.virtualflybrain.org)
+    status_url: https://iip3d.virtualflybrain.org/status
+    verify_tls: false   # cert SAN doesn't cover this hostname
+    fronts: iip3d image server
