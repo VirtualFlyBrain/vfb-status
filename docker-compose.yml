@@ -1,0 +1,24 @@
+services:
+  vfb-status:
+    build: .
+    image: virtualflybrain/vfb-status:latest
+    container_name: vfb-status
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      CHECK_INTERVAL_SECONDS: "3600"          # hourly probes
+      CONFIG_PATH: "/srv/vfb-status/config/services.yml"
+      STATE_FILE: "/data/state.json"          # survives restarts
+    volumes:
+      - ./config:/srv/vfb-status/config:ro    # edit services.yml on the host
+      - vfb-status-data:/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=3).status==200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+volumes:
+  vfb-status-data:

@@ -1,0 +1,135 @@
+# VFB service uptime tracker — endpoint definitions.
+#
+# Each entry probes one public-facing VFB endpoint. Two-state outcome:
+# - up:   status in `expect_status` + (optional) response body contains `expect`
+# - down: anything else (incl. timeout, TLS error, 4xx/5xx)
+#
+# Paths are deliberately the public LB-facing path, NOT the internal rancher
+# service health-check path (e.g. owlery's internal /health returns 404
+# through the public LB; `/` returns 200).
+#
+# `verify_tls: false` is set where the prod cert SAN doesn't cover the
+# subdomain — server is up, cert provisioning is a separate problem.
+
+defaults:
+  timeout: 10
+  method: GET
+  expect_status: [200, 301, 302]
+  verify_tls: true
+
+groups:
+  - name: Core user-facing
+    services:
+      - name: virtualflybrain.org (main site)
+        url: https://virtualflybrain.org/
+        expect: "Virtual Fly Brain"
+      - name: www.virtualflybrain.org
+        url: https://www.virtualflybrain.org/
+        expect: "Virtual Fly Brain"
+      - name: v2.virtualflybrain.org (Geppetto app)
+        url: https://v2.virtualflybrain.org/org.geppetto.frontend/geppetto
+        timeout: 20
+      - name: v3.virtualflybrain.org
+        url: https://v3.virtualflybrain.org/
+      - name: v3-cached.virtualflybrain.org
+        url: https://v3-cached.virtualflybrain.org/
+
+  - name: Data + file servers
+    services:
+      - name: data.virtualflybrain.org (file server)
+        url: https://data.virtualflybrain.org/
+        # Outage 2026-05-27 — added explicitly. Root listing served by
+        # docker-nginx-fileserver; 200/301/403 all mean the server is up.
+        expect_status: [200, 301, 302, 403]
+      - name: nas0.virtualflybrain.org
+        url: https://nas0.virtualflybrain.org/
+        verify_tls: false   # cert SAN doesn't cover this hostname
+        expect_status: [200, 301, 302, 401, 403]
+
+  - name: APIs
+    services:
+      - name: PDB Neo4j browser (pdb.virtualflybrain.org)
+        url: https://pdb.virtualflybrain.org/browser/
+      - name: KB Neo4j browser (kb.virtualflybrain.org)
+        url: https://kb.virtualflybrain.org/browser/
+      - name: Owlery (owlery.virtualflybrain.org)
+        url: https://owlery.virtualflybrain.org/
+      - name: Owl cache (owl.virtualflybrain.org)
+        url: https://owl.virtualflybrain.org/
+        timeout: 20
+      - name: SOLR (solr.virtualflybrain.org)
+        url: https://solr.virtualflybrain.org/solr/ontology/select?q=*:*&rows=0&wt=json
+        expect: "responseHeader"
+      - name: VFBquery (vfbquery.virtualflybrain.org)
+        url: https://vfbquery.virtualflybrain.org/
+        expect_status: [200, 301, 302, 404]
+      - name: api.virtualflybrain.org
+        url: https://api.virtualflybrain.org/
+        expect_status: [200, 301, 302, 404]
+      - name: VFB3 MCP (vfb3-mcp.virtualflybrain.org)
+        url: https://vfb3-mcp.virtualflybrain.org/
+        # MCP server only accepts POST on /; 405 proves the listener is up.
+        expect_status: [200, 301, 302, 404, 405]
+
+  - name: Image + NBLAST services
+    services:
+      - name: IIP3D (iip3d.virtualflybrain.org)
+        url: https://iip3d.virtualflybrain.org/
+        verify_tls: false   # cert SAN doesn't cover this hostname
+        expect_status: [200, 301, 302, 403]
+      - name: R / NBLAST on-the-fly (r.virtualflybrain.org)
+        url: https://r.virtualflybrain.org/
+        timeout: 20
+      - name: nblast.virtualflybrain.org
+        url: https://nblast.virtualflybrain.org/
+        verify_tls: false   # cert SAN doesn't cover this hostname
+        expect_status: [200, 301, 302, 403, 404]
+
+  - name: CATMAID hosted instances
+    services:
+      - name: catmaid.virtualflybrain.org (menu)
+        url: https://catmaid.virtualflybrain.org/
+        timeout: 20
+      - name: fafb.catmaid.virtualflybrain.org
+        url: https://fafb.catmaid.virtualflybrain.org/
+        timeout: 20
+      - name: l1em.catmaid.virtualflybrain.org
+        url: https://l1em.catmaid.virtualflybrain.org/
+        timeout: 20
+      - name: vnc1.catmaid.virtualflybrain.org
+        url: https://vnc1.catmaid.virtualflybrain.org/
+        timeout: 20
+      - name: fanc.catmaid.virtualflybrain.org
+        url: https://fanc.catmaid.virtualflybrain.org/
+        timeout: 20
+      - name: abd1-5.catmaid.virtualflybrain.org
+        url: https://abd1-5.catmaid.virtualflybrain.org/
+        verify_tls: false   # cert SAN doesn't cover this hostname
+        timeout: 20
+      - name: l3vnc.catmaid.virtualflybrain.org
+        url: https://l3vnc.catmaid.virtualflybrain.org/
+        timeout: 20
+      - name: iav-tnt.catmaid.virtualflybrain.org
+        url: https://iav-tnt.catmaid.virtualflybrain.org/
+        timeout: 20
+      - name: iav-robo.catmaid.virtualflybrain.org
+        url: https://iav-robo.catmaid.virtualflybrain.org/
+        timeout: 20
+      - name: igor.catmaid.virtualflybrain.org
+        url: https://igor.catmaid.virtualflybrain.org/
+        timeout: 20
+
+  - name: Auxiliary services
+    services:
+      - name: larval.virtualflybrain.org
+        url: https://larval.virtualflybrain.org/
+        expect_status: [200, 301, 302, 403, 404]
+      - name: ids.virtualflybrain.org
+        url: https://ids.virtualflybrain.org/
+        expect_status: [200, 301, 302, 404]
+      - name: braintrap.virtualflybrain.org
+        url: https://braintrap.virtualflybrain.org/
+        expect_status: [200, 301, 302]
+      - name: upload.virtualflybrain.org
+        url: https://upload.virtualflybrain.org/
+        expect_status: [200, 301, 302, 401, 403, 404]
