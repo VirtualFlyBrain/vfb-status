@@ -43,6 +43,19 @@ STATE_FILE = Path(os.environ.get("STATE_FILE", "")) if os.environ.get("STATE_FIL
 CHECK_INTERVAL_SECONDS = int(os.environ.get("CHECK_INTERVAL_SECONDS", str(60 * 60)))
 USER_AGENT = "vfb-status/1.0 (+https://github.com/VirtualFlyBrain/vfb-status)"
 
+# Rancher server health endpoints — comma- or whitespace-separated list of
+# short hostnames. Each name N is probed at http://N.inf.ed.ac.uk:5050.
+# Only reachable from inside the Edinburgh network (port 5050 is dropped
+# by the inf.ed.ac.uk firewall externally). Empty = none.
+RANCHER_SERVERS = [
+    s.strip()
+    for s in os.environ.get("RANCHER_SERVERS", "").replace(",", " ").split()
+    if s.strip()
+]
+RANCHER_DOMAIN = os.environ.get("RANCHER_DOMAIN", "inf.ed.ac.uk")
+RANCHER_PORT = int(os.environ.get("RANCHER_PORT", "5050"))
+RANCHER_TIMEOUT = float(os.environ.get("RANCHER_TIMEOUT", "5"))
+
 
 # ----- domain types -----------------------------------------------------------
 
@@ -97,6 +110,30 @@ def load_services(path: Path) -> list[ServiceSpec]:
             )
     log.info("loaded %d services from %s", len(services), path)
     return services
+
+
+def rancher_server_specs() -> list[ServiceSpec]:
+    """Synthesise checks for each name in RANCHER_SERVERS.
+
+    The endpoint convention matches the existing VFB shell health check:
+    `curl http://$SERVER.inf.ed.ac.uk:5050` — 200 = up.
+    """
+    specs: list[ServiceSpec] = []
+    for name in RANCHER_SERVERS:
+        host = f"{name}.{RANCHER_DOMAIN}"
+        specs.append(
+            ServiceSpec(
+                name=f"{host}:{RANCHER_PORT}",
+                url=f"http://{host}:{RANCHER_PORT}",
+                group="Rancher servers (inf.ed.ac.uk)",
+                method="GET",
+                timeout=RANCHER_TIMEOUT,
+                expect_status=[200],
+            )
+        )
+    if specs:
+        log.info("synthesised %d rancher-server checks from RANCHER_SERVERS", len(specs))
+    return specs
 
 
 # ----- probing ----------------------------------------------------------------
@@ -227,7 +264,7 @@ class State:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):  # type: ignore[no-untyped-def]
-    services = load_services(CONFIG_PATH)
+    services = load_services(CONFIG_PATH) + rancher_server_specs()
     state = State(services)
     state.load_from_disk()
     app.state.state = state

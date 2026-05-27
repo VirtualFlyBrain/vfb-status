@@ -10,6 +10,15 @@ services:
       CHECK_INTERVAL_SECONDS: "3600"          # hourly probes
       CONFIG_PATH: "/srv/vfb-status/config/services.yml"
       STATE_FILE: "/data/state.json"          # survives restarts
+      # Rancher node health checks — comma- or whitespace-separated list of
+      # short hostnames. Each name N is probed at http://N.inf.ed.ac.uk:5050
+      # (the existing VFB convention). Only reachable from inside the
+      # Edinburgh network — leave blank when running off-campus.
+      RANCHER_SERVERS: ""
+      # RANCHER_SERVERS: "cayenne fruitfly mustard braintrap"
+      RANCHER_DOMAIN: "inf.ed.ac.uk"
+      RANCHER_PORT: "5050"
+      RANCHER_TIMEOUT: "5"
     volumes:
       - ./config:/srv/vfb-status/config:ro    # edit services.yml on the host
       - vfb-status-data:/data

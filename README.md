@@ -34,6 +34,12 @@ Environment variables (set in `docker-compose.yml`):
 | `CHECK_INTERVAL_SECONDS` | `3600` | Seconds between scheduled probe runs. |
 | `CONFIG_PATH` | `config/services.yml` | Path to the service list inside the container. |
 | `STATE_FILE` | `/data/state.json` | Optional. Persists last-known results across restarts. Unset = in-memory only. |
+| `RANCHER_SERVERS` | _(empty)_ | Comma- or whitespace-separated list of short hostnames. Each `$NAME` is probed at `http://$NAME.$RANCHER_DOMAIN:$RANCHER_PORT`. Synthesised into a separate "Rancher servers" group on the page. Mirrors the existing VFB shell check that hits `:5050` on each node. |
+| `RANCHER_DOMAIN` | `inf.ed.ac.uk` | Domain suffix appended to each `RANCHER_SERVERS` name. |
+| `RANCHER_PORT` | `5050` | Port to probe on each rancher server. |
+| `RANCHER_TIMEOUT` | `5` | Per-request timeout in seconds for rancher-server probes. |
+
+**Rancher checks only work from inside the Edinburgh network.** Port 5050 on `inf.ed.ac.uk` is dropped at the Informatics firewall — externally only 80, 443 and 7687 are reachable. If you run this container off-campus, leave `RANCHER_SERVERS` empty.
 
 The `config/` directory is mounted read-only into the container, so you can edit `services.yml` on the host and `docker compose restart vfb-status` to pick up changes.
 
