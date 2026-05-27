@@ -9,7 +9,11 @@ services:
     environment:
       CHECK_INTERVAL_SECONDS: "3600"          # hourly probes
       CONFIG_PATH: "/srv/vfb-status/config/services.yml"
-      STATE_FILE: "/data/state.json"          # survives restarts
+      STATE_FILE: "/data/state.json"          # last-known snapshot, survives restarts
+      HISTORY_DB: "/data/history.db"          # SQLite history on mounted volume
+      HISTORY_RETENTION_DAYS: "365"           # 0 = keep forever
+      HISTORY_BUCKETS: "72"                   # status-strip width on the page
+      HISTORY_BUCKET_SECONDS: "3600"          # one bucket = 1 hour
       # Rancher node health checks — comma- or whitespace-separated list of
       # short hostnames. Each name N is probed at http://N.inf.ed.ac.uk:5050
       # (the existing VFB convention). Only reachable from inside the

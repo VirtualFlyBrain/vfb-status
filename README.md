@@ -20,10 +20,28 @@ Then open `http://localhost:8000/`. Hit **Refresh now** to force an immediate pr
 
 The page auto-refreshes every 60 s. Endpoints:
 
-- `GET /` — status page
+- `GET /` — status page with per-service status strip and 24 h / 7 d / 30 d uptime %
 - `GET /api/status` — JSON of the latest results
+- `GET /api/uptime` — per-service uptime % over 24 h / 7 d / 30 d
+- `GET /api/history?service=<name>&limit=200` — recent raw history rows for one service
 - `GET /healthz` — liveness for Rancher / Docker
 - `POST /refresh` — force an immediate re-probe of every service
+
+## History storage
+
+Every probe writes a row to a SQLite database (`HISTORY_DB`, default `/data/history.db`). The schema is one append-only `history` table indexed by `(service, ts)`. On a mounted volume this gives you long-term history across container restarts and image rebuilds — open it with any SQLite client for ad-hoc queries.
+
+```sql
+SELECT service, status, http_status, latency_ms, error, checked_at
+FROM history
+WHERE service = 'data.virtualflybrain.org (file server)'
+  AND ts >= strftime('%s', 'now', '-7 days')
+ORDER BY ts DESC;
+```
+
+Rows older than `HISTORY_RETENTION_DAYS` are pruned on startup and once a day. Set `HISTORY_RETENTION_DAYS=0` to keep forever.
+
+The status strip on the page renders the most recent `HISTORY_BUCKETS` buckets (default 72 hours = 3 days), oldest left. Reduction rule per bucket: any `down` → bucket is red; otherwise any `up` → bucket is green; otherwise grey (no data).
 
 ## Configuration
 
@@ -34,6 +52,10 @@ Environment variables (set in `docker-compose.yml`):
 | `CHECK_INTERVAL_SECONDS` | `3600` | Seconds between scheduled probe runs. |
 | `CONFIG_PATH` | `config/services.yml` | Path to the service list inside the container. |
 | `STATE_FILE` | `/data/state.json` | Optional. Persists last-known results across restarts. Unset = in-memory only. |
+| `HISTORY_DB` | `/data/history.db` | SQLite database for long-term probe history. Mount the parent directory as a volume to retain history across container rebuilds. Empty = history disabled, strip hidden, uptime % shown as "—". |
+| `HISTORY_RETENTION_DAYS` | `365` | Rows older than this are pruned on startup and once a day. `0` = keep forever. |
+| `HISTORY_BUCKETS` | `72` | Number of buckets in the status strip on the page. |
+| `HISTORY_BUCKET_SECONDS` | `3600` | One bucket = this many seconds. Default 1 h × 72 = 3 days of history visible inline. |
 | `RANCHER_SERVERS` | _(empty)_ | Comma- or whitespace-separated list of short hostnames. Each `$NAME` is probed at `http://$NAME.$RANCHER_DOMAIN:$RANCHER_PORT`. Synthesised into a separate "Rancher servers" group on the page. Mirrors the existing VFB shell check that hits `:5050` on each node. |
 | `RANCHER_DOMAIN` | `inf.ed.ac.uk` | Domain suffix appended to each `RANCHER_SERVERS` name. |
 | `RANCHER_PORT` | `5050` | Port to probe on each rancher server. |
