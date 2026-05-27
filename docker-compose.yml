@@ -13,9 +13,8 @@ services:
       # Rancher node health checks — comma- or whitespace-separated list of
       # short hostnames. Each name N is probed at http://N.inf.ed.ac.uk:5050
       # (the existing VFB convention). Only reachable from inside the
-      # Edinburgh network — leave blank when running off-campus.
-      RANCHER_SERVERS: ""
-      # RANCHER_SERVERS: "cayenne fruitfly mustard braintrap"
+      # Edinburgh network — clear this value when running off-campus.
+      RANCHER_SERVERS: "buttermilk parsley sourcream chive mayo dill"
       RANCHER_DOMAIN: "inf.ed.ac.uk"
       RANCHER_PORT: "5050"
       RANCHER_TIMEOUT: "5"
