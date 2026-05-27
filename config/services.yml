@@ -134,19 +134,34 @@ groups:
         url: https://upload.virtualflybrain.org/
         expect_status: [200, 301, 302, 401, 403, 404]
 
-# Caching services — each exposes /status (JSON) from virtualflybrain/owl_cache
-# >=1.1.22. We probe /status on the same schedule and store the cache counters
-# + connection stats in the `cache_history` SQLite table for the load-over-time
-# chart. Endpoints on an older image (1.1.20) return 404 on /status; that's
-# recorded as an error row so the upgrade trail is visible too.
+# Caching services — each exposes /status (JSON) from virtualflybrain/owl_cache.
+# We probe /status on the same schedule and store the cache counters +
+# connection stats in the `cache_history` SQLite table for the load-over-time
+# chart.
+#
+# Scheme matters: owl.virtualflybrain.org and iip3d.virtualflybrain.org are
+# bound by the rancher LB on port 80 only (their HTTPS hits a default Hugo 404
+# route). v3-cached.virtualflybrain.org is HTTPS. Don't second-guess these —
+# check rancher-compose `lb_config -> ... -> protocol:` if you change them.
 cache_services:
   - name: VFB3 cache (v3-cached.virtualflybrain.org)
     status_url: https://v3-cached.virtualflybrain.org/status
     fronts: vfbquery.virtualflybrain.org
   - name: Owlery cache (owl.virtualflybrain.org)
-    status_url: https://owl.virtualflybrain.org/status
+    status_url: http://owl.virtualflybrain.org/status
     fronts: owlery (Nico-Pipeline/vfb-owlery)
   - name: IIP3D cache (iip3d.virtualflybrain.org)
-    status_url: https://iip3d.virtualflybrain.org/status
-    verify_tls: false   # cert SAN doesn't cover this hostname
+    status_url: http://iip3d.virtualflybrain.org/status
     fronts: iip3d image server
+    # Live deployment confirms /status is reachable here (91% hit rate at last
+    # check). Earlier sandbox probes mis-reported 404 — that was a proxy/route
+    # artefact on the probe side, not the cache.
+
+# Application services exposing their own /status JSON (shape: vfbquery, ...).
+# Probed on the same schedule as everything else; metrics stored in
+# `app_history` and rendered as cards with sparklines on the page.
+app_services:
+  - name: VFBquery (vfbquery.virtualflybrain.org)
+    status_url: https://vfbquery.virtualflybrain.org/status
+    shape: vfbquery
+    fronts: VFBquery service

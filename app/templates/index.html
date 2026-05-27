@@ -261,6 +261,66 @@
       {%- endif -%}
     {%- endmacro %}
 
+    {% if app_cards %}
+      <section>
+        <h2>Application services — /status</h2>
+        <div class="cache-grid">
+          {% for c in app_cards %}
+            {% set spec = c.spec %}
+            {% set l = c.latest %}
+            <article class="cache-card">
+              <header>
+                <div>
+                  <a class="cache-name" href="{{ spec.status_url }}" rel="noopener noreferrer" target="_blank">{{ spec.name }}</a>
+                  {% if spec.fronts %}<div class="cache-fronts">{{ spec.fronts }} · shape={{ spec.shape }}</div>{% endif %}
+                </div>
+                {% if l and l.ok %}
+                  <span class="pill {{ 'up' if l.q_status in (None, 'ok') else 'down' }}">{{ l.q_status or 'ok' }}</span>
+                {% elif l %}
+                  <span class="pill down" title="{{ l.error or 'unreachable' }}">down</span>
+                {% else %}
+                  <span class="pill unknown">no data</span>
+                {% endif %}
+              </header>
+
+              {% if l and l.ok and spec.shape == "vfbquery" %}
+                <dl class="cache-stats">
+                  <div><dt>active</dt><dd>{{ fmt_int(l.q_active) }}{% if l.concurrency_pct is not none %} <small>({{ "%.0f"|format(l.concurrency_pct) }}%)</small>{% endif %}</dd></div>
+                  <div><dt>waiting</dt><dd>{{ fmt_int(l.q_waiting) }}{% if l.queue_pct is not none %} <small>({{ "%.0f"|format(l.queue_pct) }}%)</small>{% endif %}</dd></div>
+                  <div><dt>workers</dt><dd>{{ fmt_int(l.q_workers) }}</dd></div>
+                  <div><dt>max conc.</dt><dd>{{ fmt_int(l.q_max_concurrent) }}</dd></div>
+                  <div><dt>queue cap</dt><dd>{{ fmt_int(l.q_max_queue_depth) }}</dd></div>
+                  <div><dt>served</dt><dd>{{ fmt_int(l.q_total_served) }}</dd></div>
+                  <div><dt>cache hits</dt><dd>{{ fmt_int(l.q_cache_hits) }}</dd></div>
+                  <div><dt>cache size</dt><dd>{{ fmt_int(l.q_cache_size) }}</dd></div>
+                  <div><dt>coalesced</dt><dd>{{ fmt_int(l.q_coalesced_total) }}</dd></div>
+                  <div><dt>in flight</dt><dd>{{ fmt_int(l.q_coalesced_in_flight) }}</dd></div>
+                  <div><dt>blocked</dt><dd>{{ fmt_int(l.q_scanner_blocked) }}</dd></div>
+                  <div><dt>solr cache</dt><dd>{% if l.q_solr_cache_enabled %}on{% elif l.q_solr_cache_enabled is none %}—{% else %}off{% endif %}</dd></div>
+                </dl>
+                <div class="cache-chart">
+                  <div class="chart-label">Active requests (concurrency)</div>
+                  {{ sparkline(c.active_pts, width=320, height=42) }}
+                </div>
+                <div class="cache-chart">
+                  <div class="chart-label">Queued requests (waiting)</div>
+                  {{ sparkline(c.waiting_pts, width=320, height=42, color="var(--down)", fill="rgba(192,57,43,0.12)") }}
+                </div>
+                <div class="cache-chart">
+                  <div class="chart-label">Requests served per check (Δ total_served)</div>
+                  {{ sparkline(c.rate_pts, width=320, height=42, color="#3498db", fill="rgba(52,152,219,0.15)") }}
+                </div>
+              {% else %}
+                <div class="cache-err">
+                  {% if l and l.error %}{{ l.error }}{% elif l %}unsupported shape “{{ spec.shape }}”{% else %}no data yet{% endif %}
+                </div>
+              {% endif %}
+            </article>
+          {% endfor %}
+        </div>
+      </section>
+    {% endif %}
+
     {% if cache_cards %}
       <section>
         <h2>Caching services — load over time</h2>
@@ -354,6 +414,7 @@
       <a href="/api/status">/api/status</a> ·
       <a href="/api/uptime">/api/uptime</a> ·
       <a href="/api/cache">/api/cache</a> ·
+      <a href="/api/app">/api/app</a> ·
       <a href="/healthz">/healthz</a> ·
       <a href="https://github.com/VirtualFlyBrain/vfb-status">source</a>
     </footer>

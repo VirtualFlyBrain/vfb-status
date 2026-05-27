@@ -2,6 +2,22 @@
 
 All notable changes to vfb-status are recorded here. The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] — 2026-05-27
+
+Add application-service `/status` tracking (VFBquery shape).
+
+### Added
+
+- New `app_services:` block in `config/services.yml` for application services that expose their own JSON `/status`. Each entry declares a `shape:` so the parser knows what fields to extract.
+- `shape: vfbquery` parses VFBquery's `/status`: `status`, `workers`, `max_concurrent`, `max_queue_depth`, `active`, `waiting`, `total_served`, `cache_size`, `cache_hits`, `coalesced_total`, `coalesced_in_flight`, `scanner_probes_blocked`, `solr_cache.enabled`.
+- New `app_history` SQLite table — one row per probe, indexed by `(service, ts)`. Same retention rules as `history` and `cache_history`.
+- New "Application services — /status" section on the page. Per-service card with twelve live counters (incl. utilisation % for `active` vs `max_concurrent` and `waiting` vs `max_queue_depth`) and three inline SVG sparklines: active requests (concurrency), queued requests (waiting), and Δ `total_served` per check (request rate).
+- `GET /api/app` — latest snapshot per app service. `GET /api/app/history?service=<name>` — down-sampled time series.
+
+### Fixed
+
+- Cache services config: scheme corrected per LB routing. `owl.virtualflybrain.org` and `iip3d.virtualflybrain.org` are HTTP-only at the rancher LB; `v3-cached.virtualflybrain.org` is HTTPS-only. Earlier sandbox probe results that suggested `iip3d` `/status` was unroutable were a probe-side artefact — the live deployment confirms all three caches probe successfully.
+
 ## [0.3.0] — 2026-05-27
 
 Track cache `/status` data and visualise load over time.
@@ -51,6 +67,7 @@ Initial release. Self-contained Docker uptime tracker for public-facing Virtual 
 - Four subdomains (`nas0`, `iip3d`, `nblast`, `abd1-5.catmaid`) ship with `verify_tls: false` because the production cert SAN doesn't cover them. The servers are up; the cert provisioning is a separate problem.
 - Kubernetes nodes are intentionally not handled here — separate checks planned for a later release.
 
+[0.4.0]: https://github.com/VirtualFlyBrain/vfb-status/releases/tag/v0.4.0
 [0.3.0]: https://github.com/VirtualFlyBrain/vfb-status/releases/tag/v0.3.0
 [0.2.0]: https://github.com/VirtualFlyBrain/vfb-status/releases/tag/v0.2.0
 [0.1.0]: https://github.com/VirtualFlyBrain/vfb-status/releases/tag/v0.1.0

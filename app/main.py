@@ -113,6 +113,65 @@ class CacheServiceSpec:
 
 
 @dataclass
+class AppServiceSpec:
+    """An application service exposing its own JSON /status.
+
+    `shape` selects the parser/renderer. Currently supports:
+    - "vfbquery": workers/active/waiting/total_served/cache_hits/coalesced/...
+    """
+
+    name: str
+    status_url: str
+    shape: str = "vfbquery"
+    fronts: str | None = None
+    timeout: float = 8.0
+    verify_tls: bool = True
+
+
+@dataclass
+class AppCheck:
+    """Generic app /status result. Stores everything that's relevant for the
+    known shapes plus the raw JSON document.
+    """
+
+    name: str
+    status_url: str
+    shape: str
+    ok: bool
+    checked_at: str
+    error: str | None = None
+
+    # vfbquery shape
+    q_status: str | None = None
+    q_workers: int | None = None
+    q_max_concurrent: int | None = None
+    q_max_queue_depth: int | None = None
+    q_active: int | None = None
+    q_waiting: int | None = None
+    q_total_served: int | None = None
+    q_cache_size: int | None = None
+    q_cache_hits: int | None = None
+    q_coalesced_total: int | None = None
+    q_coalesced_in_flight: int | None = None
+    q_scanner_blocked: int | None = None
+    q_solr_cache_enabled: bool | None = None
+
+    raw: str | None = None
+
+    @property
+    def queue_pct(self) -> float | None:
+        if self.q_max_queue_depth and self.q_max_queue_depth > 0 and self.q_waiting is not None:
+            return 100.0 * self.q_waiting / self.q_max_queue_depth
+        return None
+
+    @property
+    def concurrency_pct(self) -> float | None:
+        if self.q_max_concurrent and self.q_max_concurrent > 0 and self.q_active is not None:
+            return 100.0 * self.q_active / self.q_max_concurrent
+        return None
+
+
+@dataclass
 class CacheCheck:
     name: str
     status_url: str
@@ -165,6 +224,25 @@ def load_services(path: Path) -> list[ServiceSpec]:
             )
     log.info("loaded %d services from %s", len(services), path)
     return services
+
+
+def load_app_services(path: Path) -> list[AppServiceSpec]:
+    raw = yaml.safe_load(path.read_text())
+    out: list[AppServiceSpec] = []
+    for svc in raw.get("app_services", []) or []:
+        out.append(
+            AppServiceSpec(
+                name=svc["name"],
+                status_url=svc["status_url"],
+                shape=svc.get("shape", "vfbquery"),
+                fronts=svc.get("fronts"),
+                timeout=float(svc.get("timeout", 8.0)),
+                verify_tls=bool(svc.get("verify_tls", True)),
+            )
+        )
+    if out:
+        log.info("loaded %d app services from %s", len(out), path)
+    return out
 
 
 def load_cache_services(path: Path) -> list[CacheServiceSpec]:
@@ -375,6 +453,82 @@ async def probe_all_caches(services: Iterable[CacheServiceSpec]) -> list[CacheCh
         return await asyncio.gather(*[probe_cache(cv, cnv, s) for s in services])
 
 
+async def probe_app(
+    client_verify: httpx.AsyncClient,
+    client_no_verify: httpx.AsyncClient,
+    svc: AppServiceSpec,
+) -> AppCheck:
+    """Fetch an application service's /status JSON. Never raises."""
+    started = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    client = client_verify if svc.verify_tls else client_no_verify
+    try:
+        resp = await client.get(
+            svc.status_url,
+            timeout=svc.timeout,
+            follow_redirects=True,
+            headers={"User-Agent": USER_AGENT, "Accept": "application/json"},
+        )
+        if resp.status_code != 200:
+            return AppCheck(
+                name=svc.name, status_url=svc.status_url, shape=svc.shape,
+                ok=False, checked_at=started, error=f"HTTP {resp.status_code}",
+            )
+        try:
+            data = resp.json()
+        except Exception as exc:  # noqa: BLE001
+            return AppCheck(
+                name=svc.name, status_url=svc.status_url, shape=svc.shape,
+                ok=False, checked_at=started, error=f"invalid JSON: {exc}",
+            )
+
+        if svc.shape == "vfbquery":
+            solr_cache = data.get("solr_cache") or {}
+            return AppCheck(
+                name=svc.name,
+                status_url=svc.status_url,
+                shape=svc.shape,
+                ok=True,
+                checked_at=started,
+                q_status=data.get("status"),
+                q_workers=_to_int(data.get("workers")),
+                q_max_concurrent=_to_int(data.get("max_concurrent")),
+                q_max_queue_depth=_to_int(data.get("max_queue_depth")),
+                q_active=_to_int(data.get("active")),
+                q_waiting=_to_int(data.get("waiting")),
+                q_total_served=_to_int(data.get("total_served")),
+                q_cache_size=_to_int(data.get("cache_size")),
+                q_cache_hits=_to_int(data.get("cache_hits")),
+                q_coalesced_total=_to_int(data.get("coalesced_total")),
+                q_coalesced_in_flight=_to_int(data.get("coalesced_in_flight")),
+                q_scanner_blocked=_to_int(data.get("scanner_probes_blocked")),
+                q_solr_cache_enabled=_to_bool(solr_cache.get("enabled")),
+                raw=resp.text,
+            )
+
+        # Unknown shape — record raw only.
+        return AppCheck(
+            name=svc.name, status_url=svc.status_url, shape=svc.shape,
+            ok=True, checked_at=started, raw=resp.text,
+        )
+    except httpx.TimeoutException:
+        return AppCheck(
+            name=svc.name, status_url=svc.status_url, shape=svc.shape,
+            ok=False, checked_at=started, error=f"timeout after {svc.timeout}s",
+        )
+    except Exception as exc:  # noqa: BLE001
+        return AppCheck(
+            name=svc.name, status_url=svc.status_url, shape=svc.shape,
+            ok=False, checked_at=started, error=f"{type(exc).__name__}: {exc}",
+        )
+
+
+async def probe_all_apps(services: Iterable[AppServiceSpec]) -> list[AppCheck]:
+    if not services:
+        return []
+    async with httpx.AsyncClient(verify=True) as cv, httpx.AsyncClient(verify=False) as cnv:
+        return await asyncio.gather(*[probe_app(cv, cnv, s) for s in services])
+
+
 # ----- history storage --------------------------------------------------------
 
 
@@ -416,6 +570,31 @@ class History:
     );
     CREATE INDEX IF NOT EXISTS idx_cache_service_ts ON cache_history (service, ts);
     CREATE INDEX IF NOT EXISTS idx_cache_ts ON cache_history (ts);
+
+    CREATE TABLE IF NOT EXISTS app_history (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        service TEXT NOT NULL,
+        shape TEXT NOT NULL,
+        ts INTEGER NOT NULL,
+        checked_at TEXT NOT NULL,
+        ok INTEGER NOT NULL,
+        error TEXT,
+        q_status TEXT,
+        q_workers INTEGER,
+        q_max_concurrent INTEGER,
+        q_max_queue_depth INTEGER,
+        q_active INTEGER,
+        q_waiting INTEGER,
+        q_total_served INTEGER,
+        q_cache_size INTEGER,
+        q_cache_hits INTEGER,
+        q_coalesced_total INTEGER,
+        q_coalesced_in_flight INTEGER,
+        q_scanner_blocked INTEGER,
+        q_solr_cache_enabled INTEGER
+    );
+    CREATE INDEX IF NOT EXISTS idx_app_service_ts ON app_history (service, ts);
+    CREATE INDEX IF NOT EXISTS idx_app_ts ON app_history (ts);
     """
 
     def __init__(self, path: Path | None) -> None:
@@ -474,12 +653,14 @@ class History:
         removed_h = cur.rowcount or 0
         cur.execute("DELETE FROM cache_history WHERE ts < ?", (cutoff,))
         removed_c = cur.rowcount or 0
-        if removed_h or removed_c:
+        cur.execute("DELETE FROM app_history WHERE ts < ?", (cutoff,))
+        removed_a = cur.rowcount or 0
+        if removed_h or removed_c or removed_a:
             log.info(
-                "history: pruned %d service rows + %d cache rows older than %dd",
-                removed_h, removed_c, retention_days,
+                "history: pruned %d service + %d cache + %d app rows older than %dd",
+                removed_h, removed_c, removed_a, retention_days,
             )
-        return removed_h + removed_c
+        return removed_h + removed_c + removed_a
 
     def record_cache(self, results: Iterable[CacheCheck]) -> None:
         if self._conn is None:
@@ -647,6 +828,81 @@ class History:
                 out[idx] = "up"
         return out
 
+    def record_app(self, results: Iterable[AppCheck]) -> None:
+        if self._conn is None:
+            return
+        rows = [
+            (
+                r.name,
+                r.shape,
+                int(time.time()),
+                r.checked_at,
+                1 if r.ok else 0,
+                r.error,
+                r.q_status,
+                r.q_workers,
+                r.q_max_concurrent,
+                r.q_max_queue_depth,
+                r.q_active,
+                r.q_waiting,
+                r.q_total_served,
+                r.q_cache_size,
+                r.q_cache_hits,
+                r.q_coalesced_total,
+                r.q_coalesced_in_flight,
+                r.q_scanner_blocked,
+                None if r.q_solr_cache_enabled is None else (1 if r.q_solr_cache_enabled else 0),
+            )
+            for r in results
+        ]
+        cur = self._conn.cursor()
+        try:
+            cur.execute("BEGIN")
+            cur.executemany(
+                "INSERT INTO app_history "
+                "(service, shape, ts, checked_at, ok, error, "
+                " q_status, q_workers, q_max_concurrent, q_max_queue_depth, "
+                " q_active, q_waiting, q_total_served, q_cache_size, q_cache_hits, "
+                " q_coalesced_total, q_coalesced_in_flight, q_scanner_blocked, "
+                " q_solr_cache_enabled) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                rows,
+            )
+            cur.execute("COMMIT")
+        except Exception:
+            cur.execute("ROLLBACK")
+            raise
+
+    def app_series(
+        self, service: str, since_seconds: int, max_points: int = 120
+    ) -> list[dict[str, Any]]:
+        if self._conn is None:
+            return []
+        cutoff = int(time.time()) - since_seconds
+        cur = self._conn.execute(
+            "SELECT ts, ok, q_active, q_waiting, q_total_served, q_cache_hits, "
+            "q_coalesced_in_flight, q_coalesced_total "
+            "FROM app_history WHERE service = ? AND ts >= ? ORDER BY ts ASC",
+            (service, cutoff),
+        )
+        rows = cur.fetchall()
+        if not rows:
+            return []
+        step = max(1, len(rows) // max_points)
+        return [
+            {
+                "ts": ts,
+                "ok": bool(ok),
+                "active": qa,
+                "waiting": qw,
+                "total_served": ts_count,
+                "cache_hits": ch,
+                "coalesced_in_flight": cif,
+                "coalesced_total": ct,
+            }
+            for ts, ok, qa, qw, ts_count, ch, cif, ct in rows[::step]
+        ]
+
     def recent(self, service: str, limit: int = 200) -> list[dict[str, Any]]:
         if self._conn is None:
             return []
@@ -681,12 +937,15 @@ class State:
         self,
         services: list[ServiceSpec],
         cache_services: list[CacheServiceSpec] | None = None,
+        app_services: list[AppServiceSpec] | None = None,
         history: History | None = None,
     ):
         self.services = services
         self.cache_services = cache_services or []
+        self.app_services = app_services or []
         self.results: dict[str, CheckResult] = {}
         self.cache_results: dict[str, CacheCheck] = {}
+        self.app_results: dict[str, AppCheck] = {}
         self.last_run: str | None = None
         self.running = False
         self.history = history or History(None)
@@ -726,18 +985,22 @@ class State:
             self.running = True
             try:
                 log.info(
-                    "probing %d services + %d caches",
+                    "probing %d services + %d caches + %d apps",
                     len(self.services),
                     len(self.cache_services),
+                    len(self.app_services),
                 )
-                results, cache_results = await asyncio.gather(
+                results, cache_results, app_results = await asyncio.gather(
                     probe_all(self.services),
                     probe_all_caches(self.cache_services),
+                    probe_all_apps(self.app_services),
                 )
                 for r in results:
                     self.results[r.name] = r
                 for cr in cache_results:
                     self.cache_results[cr.name] = cr
+                for ar in app_results:
+                    self.app_results[ar.name] = ar
                 self.last_run = datetime.now(timezone.utc).isoformat(timespec="seconds")
                 self.persist()
                 if self.history.enabled:
@@ -745,13 +1008,16 @@ class State:
                         self.history.record(results)
                         if cache_results:
                             self.history.record_cache(cache_results)
+                        if app_results:
+                            self.history.record_app(app_results)
                     except Exception as exc:  # noqa: BLE001
                         log.warning("history write failed: %s", exc)
                 up = sum(1 for r in results if r.status == "up")
                 cache_ok = sum(1 for c in cache_results if c.ok)
+                app_ok = sum(1 for a in app_results if a.ok)
                 log.info(
-                    "checks complete: %d/%d up, %d/%d caches ok",
-                    up, len(results), cache_ok, len(cache_results),
+                    "checks complete: %d/%d up, %d/%d caches ok, %d/%d apps ok",
+                    up, len(results), cache_ok, len(cache_results), app_ok, len(app_results),
                 )
             finally:
                 self.running = False
@@ -764,9 +1030,15 @@ class State:
 async def lifespan(app: FastAPI):  # type: ignore[no-untyped-def]
     services = load_services(CONFIG_PATH) + rancher_server_specs()
     cache_services = load_cache_services(CONFIG_PATH)
+    app_services = load_app_services(CONFIG_PATH)
     history = History(HISTORY_DB)
     history.prune(HISTORY_RETENTION_DAYS)
-    state = State(services, cache_services=cache_services, history=history)
+    state = State(
+        services,
+        cache_services=cache_services,
+        app_services=app_services,
+        history=history,
+    )
     state.load_from_disk()
     app.state.state = state
 
@@ -848,6 +1120,38 @@ def _cache_card(state: State, svc: CacheServiceSpec) -> dict[str, Any]:
     }
 
 
+def _app_card(state: State, svc: AppServiceSpec) -> dict[str, Any]:
+    latest = state.app_results.get(svc.name)
+    series = state.history.app_series(
+        svc.name, _cache_chart_window_seconds(), max_points=120
+    )
+    active_pts = [(r["ts"], r["active"]) for r in series if r["active"] is not None]
+    waiting_pts = [(r["ts"], r["waiting"]) for r in series if r["waiting"] is not None]
+    rate_pts: list[tuple[int, int]] = []
+    cache_rate_pts: list[tuple[int, int]] = []
+    if len(series) >= 2:
+        prev_served = None
+        prev_hits = None
+        for r in series:
+            ts_ = r["total_served"]
+            ch = r["cache_hits"]
+            if prev_served is not None and ts_ is not None:
+                rate_pts.append((r["ts"], max(0, ts_ - prev_served)))
+            if prev_hits is not None and ch is not None:
+                cache_rate_pts.append((r["ts"], max(0, ch - prev_hits)))
+            prev_served = ts_
+            prev_hits = ch
+    return {
+        "spec": svc,
+        "latest": latest,
+        "series": series,
+        "active_pts": active_pts,
+        "waiting_pts": waiting_pts,
+        "rate_pts": rate_pts,
+        "cache_rate_pts": cache_rate_pts,
+    }
+
+
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request) -> HTMLResponse:
     state: State = request.app.state.state
@@ -858,6 +1162,7 @@ async def index(request: Request) -> HTMLResponse:
     up = sum(1 for r in state.results.values() if r.status == "up")
     down = sum(1 for r in state.results.values() if r.status == "down")
     cache_cards = [_cache_card(state, s) for s in state.cache_services]
+    app_cards = [_app_card(state, s) for s in state.app_services]
     return templates.TemplateResponse(
         request,
         "index.html",
@@ -873,6 +1178,7 @@ async def index(request: Request) -> HTMLResponse:
             "history_buckets": HISTORY_BUCKETS,
             "history_bucket_seconds": HISTORY_BUCKET_SECONDS,
             "cache_cards": cache_cards,
+            "app_cards": app_cards,
         },
     )
 
@@ -942,6 +1248,62 @@ async def api_cache(request: Request) -> JSONResponse:
             }
         )
     return JSONResponse({"caches": out})
+
+
+@app.get("/api/app")
+async def api_app(request: Request) -> JSONResponse:
+    """Latest snapshot per app service."""
+    state: State = request.app.state.state
+    out = []
+    for svc in state.app_services:
+        l = state.app_results.get(svc.name)
+        out.append(
+            {
+                "service": svc.name,
+                "shape": svc.shape,
+                "status_url": svc.status_url,
+                "fronts": svc.fronts,
+                "ok": l.ok if l else None,
+                "checked_at": l.checked_at if l else None,
+                "error": l.error if l else None,
+                "q_status": l.q_status if l else None,
+                "workers": l.q_workers if l else None,
+                "max_concurrent": l.q_max_concurrent if l else None,
+                "max_queue_depth": l.q_max_queue_depth if l else None,
+                "active": l.q_active if l else None,
+                "waiting": l.q_waiting if l else None,
+                "total_served": l.q_total_served if l else None,
+                "cache_size": l.q_cache_size if l else None,
+                "cache_hits": l.q_cache_hits if l else None,
+                "coalesced_total": l.q_coalesced_total if l else None,
+                "coalesced_in_flight": l.q_coalesced_in_flight if l else None,
+                "scanner_probes_blocked": l.q_scanner_blocked if l else None,
+                "solr_cache_enabled": l.q_solr_cache_enabled if l else None,
+                "queue_pct": l.queue_pct if l else None,
+                "concurrency_pct": l.concurrency_pct if l else None,
+            }
+        )
+    return JSONResponse({"apps": out})
+
+
+@app.get("/api/app/history")
+async def api_app_history(
+    request: Request, service: str, since_seconds: int = 86400, max_points: int = 200
+) -> JSONResponse:
+    state: State = request.app.state.state
+    if not state.history.enabled:
+        raise HTTPException(status_code=404, detail="history is disabled")
+    if not any(a.name == service for a in state.app_services):
+        raise HTTPException(status_code=404, detail=f"unknown app service: {service}")
+    return JSONResponse(
+        {
+            "service": service,
+            "since_seconds": since_seconds,
+            "series": state.history.app_series(
+                service, max(60, since_seconds), max_points=max(2, min(max_points, 2000))
+            ),
+        }
+    )
 
 
 @app.get("/api/cache/history")

@@ -26,6 +26,8 @@ The page auto-refreshes every 60 s. Endpoints:
 - `GET /api/history?service=<name>&limit=200` — recent raw history rows for one service
 - `GET /api/cache` — latest snapshot of every cache service (hit/miss counts, connections, hit rate)
 - `GET /api/cache/history?service=<name>&since_seconds=86400&max_points=200` — down-sampled cache time series
+- `GET /api/app` — latest snapshot of every application service (`shape: vfbquery` etc.)
+- `GET /api/app/history?service=<name>&since_seconds=86400&max_points=200` — down-sampled app time series
 - `GET /healthz` — liveness for Rancher / Docker
 - `POST /refresh` — force an immediate re-probe of every service
 
@@ -60,6 +62,21 @@ cache_services:
 ```
 
 Each entry is probed on the same schedule as the regular endpoints; the parsed metrics go into the `cache_history` table. The page renders a card per cache with the latest snapshot plus two inline sparklines: active connections (load proxy) and Δ cache_total per check (request-rate proxy). Cache endpoints whose `/status` is unreachable still record an error row, which makes it easy to see when older `1.1.20` images get upgraded.
+
+## Application services (`/status`)
+
+Application services with their own JSON `/status` go under `app_services:`. Each entry declares its `shape:`, which selects the parser and renderer. Currently supported:
+
+- **`shape: vfbquery`** — extracts `workers`, `max_concurrent`, `max_queue_depth`, `active`, `waiting`, `total_served`, `cache_size`, `cache_hits`, `coalesced_total`, `coalesced_in_flight`, `scanner_probes_blocked`, `solr_cache.enabled`.
+
+```yaml
+app_services:
+  - name: VFBquery (vfbquery.virtualflybrain.org)
+    status_url: https://vfbquery.virtualflybrain.org/status
+    shape: vfbquery
+```
+
+Metrics persist in the `app_history` table. The page card shows the live counters plus inline sparklines for active requests, queued requests, and Δ `total_served` per check (request rate). Adding a new shape is a small change: define how to parse the fields you care about and how to render them.
 
 ## Configuration
 
