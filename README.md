@@ -30,6 +30,7 @@ The page auto-refreshes every 60 s. Endpoints:
 - `GET /api/app/history?service=<name>&since_seconds=86400&max_points=200` — down-sampled app time series
 - `GET /api/neo4j` — latest snapshot per Neo4j database, including `db_status`, `node_count`, and any Neo4j start-up error
 - `GET /api/neo4j/history?service=<name>&since_seconds=86400&max_points=200` — down-sampled Neo4j time series
+- `GET /api/cluster` — Rancher cluster overview: hosts (with LB-coverage and DNS-ingress flags) and active services in the configured stacks
 - `GET /healthz` — liveness for Rancher / Docker
 - `POST /refresh` — force an immediate re-probe of every service
 
@@ -64,6 +65,46 @@ cache_services:
 ```
 
 Each entry is probed on the same schedule as the regular endpoints; the parsed metrics go into the `cache_history` table. The page renders a card per cache with the latest snapshot plus two inline sparklines: active connections (load proxy) and Δ cache_total per check (request-rate proxy). Cache endpoints whose `/status` is unreachable still record an error row, which makes it easy to see when older `1.1.20` images get upgraded.
+
+### Per-container probes via Rancher v1 API
+
+A bare LB-fronted probe of `https://<host>/status` only ever shows one random backend's view, which is misleading when a service runs more than one container. Add an optional `rancher:` block to each `cache_services` entry to enumerate the service's running instances via the Rancher v1 API and probe each container's `/status` directly:
+
+```yaml
+cache_services:
+  - name: VFB3 cache (v3-cached.virtualflybrain.org)
+    status_url: https://v3-cached.virtualflybrain.org/status   # fallback if API fails
+    rancher:
+      service_url: https://herd.virtualflybrain.org/v2-beta/projects/1a5/services/1s337
+      container_port: 80
+      container_path: /status
+```
+
+Required env on the container: `RANCHER_API_KEY` and `RANCHER_API_SECRET` (environment-scoped read-only key from the Rancher UI). Per-container rows land in `cache_history` with the `container` column populated; the LB fallback rows have `container = NULL`. The page card aggregates across containers for the summary stats and sparklines, and shows a per-container breakdown table below.
+
+**Networking requirement:** the deployed status container must be on the Rancher overlay network so that `10.42.x.x` `primaryIpAddress` values are reachable. If they're not, the probe logs a warning and falls back to the LB-fronted single probe automatically.
+
+## Rancher cluster overview
+
+When `RANCHER_API_KEY` / `RANCHER_API_SECRET` are set, the page renders a "Rancher cluster" section above the regular groups showing:
+
+- **Host coverage:** N of M hosts active, how many run the load balancer, how many are pointed at by public DNS
+- **Service health:** N of M `state=active` services healthy in the configured stacks. Inactive services are filtered out (they're meant to be stopped, so they're not signal). A table lists every service where `currentScale < scale` or `healthState != healthy`.
+
+Each row in the existing Rancher servers group also gains three badges sourced from this overview:
+
+- **`rancher: active`** / **`rancher: inactive`** — host's `state` from the Rancher API (orthogonal to the `:5050` HTTP check, which only tells you the host's HTTP listener is up).
+- **`LB`** — the active `vfb-loadbalancer-main` is running on this host.
+- **`DNS`** — the host's `agentIpAddress` is in the A-records for `RANCHER_DNS_HOSTNAME` (default `virtualflybrain.org`). Dynamic — re-evaluated every probe via a fresh `getaddrinfo` lookup, so DNS changes are picked up automatically.
+
+Configure via env vars:
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `RANCHER_PROJECT_URL` | `https://herd.virtualflybrain.org/v2-beta/projects/1a5` | Project endpoint on the Rancher v1 API. |
+| `RANCHER_STACKS` | `vfb-services-live` | Comma- or whitespace-separated stack names to include in the service overview. Leave tight to avoid dev-stack noise. |
+| `RANCHER_DNS_HOSTNAME` | `virtualflybrain.org` | Hostname whose A-records mark a host as DNS-ingress. |
+| `RANCHER_DNS_HOSTS` | _(empty)_ | Static override of the DNS-ingress flag (comma-separated short host names). Leave empty for dynamic DNS detection. |
 
 ## Application services (`/status`)
 

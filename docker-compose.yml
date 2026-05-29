@@ -28,6 +28,24 @@ services:
       # secrets. The default Neo4j username on VFB is "neo4j"; the read-only
       # password for the public PDB/KB endpoints is set by the deployer.
       NEO4J_PASSWORD: "${NEO4J_PASSWORD:-}"
+      # Rancher v1 API credentials. Needed when any cache_services entry has
+      # a rancher: block (per-container probing). Environment-scoped read-only
+      # key is enough. NEVER commit the values — pass via env or rancher
+      # secrets. See https://rancher.com/docs/rancher/v1.6/en/api/v2-beta/
+      RANCHER_API_KEY: "${RANCHER_API_KEY:-}"
+      RANCHER_API_SECRET: "${RANCHER_API_SECRET:-}"
+      # Cluster overview (added v0.7.0). Defaults match the live VFB project
+      # (id 1a5 on herd) and the production stack. RANCHER_STACKS is a comma-
+      # or space-separated list — keep it tight to avoid dev-stack noise.
+      RANCHER_PROJECT_URL: "${RANCHER_PROJECT_URL:-https://herd.virtualflybrain.org/v2-beta/projects/1a5}"
+      RANCHER_STACKS: "${RANCHER_STACKS:-vfb-services-live}"
+      # DNS ingress detection. By default DYNAMIC — every probe resolves
+      # RANCHER_DNS_HOSTNAME via the OS resolver (honours TTL, no caching)
+      # and tags every host whose agentIpAddress is in the A-records. Leave
+      # RANCHER_DNS_HOSTS empty so the auto-detect wins; only set it as a
+      # static override for testing or split-horizon DNS edge cases.
+      RANCHER_DNS_HOSTNAME: "${RANCHER_DNS_HOSTNAME:-virtualflybrain.org}"
+      RANCHER_DNS_HOSTS: "${RANCHER_DNS_HOSTS:-}"
     volumes:
       - ./config:/srv/vfb-status/config:ro    # edit services.yml on the host
       - vfb-status-data:/data

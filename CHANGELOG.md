@@ -2,6 +2,49 @@
 
 All notable changes to vfb-status are recorded here. The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.0] — 2026-05-29
+
+Rancher cluster overview, host augmentation, DNS-ingress flag.
+
+### Added
+
+- New "Rancher cluster" section on the page showing: hosts active vs total, LB coverage, public-DNS ingress count, and active services healthy vs total in the configured stacks. A table lists every service where `currentScale < scale` or `healthState != healthy`.
+- New env vars:
+  - `RANCHER_PROJECT_URL` (default `https://herd.virtualflybrain.org/v2-beta/projects/1a5`)
+  - `RANCHER_STACKS` (default `vfb-services-live`) — comma- or whitespace-separated. Inactive services are filtered out automatically.
+  - `RANCHER_DNS_HOSTNAME` (default `virtualflybrain.org`) — dynamic DNS ingress detection.
+  - `RANCHER_DNS_HOSTS` — optional static override.
+- Each row in the existing Rancher servers group gains three badges:
+  - **`rancher: active/inactive`** — host's `state` from the Rancher API (orthogonal to the `:5050` HTTP check).
+  - **`LB`** — the active `vfb-loadbalancer-main` is running on this host.
+  - **`DNS`** — the host's `agentIpAddress` is in the public DNS A-records. Re-evaluated every probe.
+- New tables: `rancher_host_history` and `rancher_service_history`. Same retention as the rest.
+- New endpoint: `GET /api/cluster`.
+
+### Notes
+
+- Per-container restart counts (suggestion #3 in the v0.6.0 conversation) were dropped. Rancher v1 returns `null` for `restartCount` on every instance in this project, so building UI for it would show nothing useful.
+
+## [0.6.0] — 2026-05-29
+
+Per-container cache probes via the Rancher v1 API. The previous LB-fronted `/status` probe only ever saw one random backend's view, which was misleading for any service with `scale > 1` (VFB3-Cache and IIP3D-Cache both currently run 2 containers).
+
+### Added
+
+- New optional `rancher:` block on `cache_services` entries. When set, every probe enumerates the service's running container instances via the Rancher v1 API and probes each container's `/status` directly at its `primaryIpAddress`.
+- New env vars `RANCHER_API_KEY` and `RANCHER_API_SECRET` for Basic-auth to the Rancher API. Environment-scoped read-only is enough. Never commit them.
+- New `container` column on `cache_history` (auto-migrated on existing DBs). NULL for LB-level rows, populated with the container name for per-container rows.
+- Per-container breakdown table on each cache card, plus cluster-summed totals at the top. Sparklines now aggregate across containers per timestamp.
+- `/api/cache` now returns both a per-service `summary` (cluster sum, container count, ok count) and a `containers[]` list with per-container metrics.
+
+### Fixed
+
+- Mistakenly listed `query-cache-server` (1s322) as an owl_cache. It's a Solr cache and doesn't speak the owl_cache `/status` JSON shape. Removed.
+
+### Notes
+
+- The Rancher API path requires the deployed container to be on the Rancher overlay network so that `10.42.x.x` instance IPs are reachable. If they're not, the probe logs a warning and falls back transparently to the LB-fronted single probe.
+
 ## [0.5.0] — 2026-05-29
 
 Catch the "load failed, DB empty, /browser/ still 200" failure mode on the VFB Neo4j endpoints.
@@ -95,6 +138,8 @@ Initial release. Self-contained Docker uptime tracker for public-facing Virtual 
 - Four subdomains (`nas0`, `iip3d`, `nblast`, `abd1-5.catmaid`) ship with `verify_tls: false` because the production cert SAN doesn't cover them. The servers are up; the cert provisioning is a separate problem.
 - Kubernetes nodes are intentionally not handled here — separate checks planned for a later release.
 
+[0.7.0]: https://github.com/VirtualFlyBrain/vfb-status/releases/tag/v0.7.0
+[0.6.0]: https://github.com/VirtualFlyBrain/vfb-status/releases/tag/v0.6.0
 [0.5.0]: https://github.com/VirtualFlyBrain/vfb-status/releases/tag/v0.5.0
 [0.4.0]: https://github.com/VirtualFlyBrain/vfb-status/releases/tag/v0.4.0
 [0.3.0]: https://github.com/VirtualFlyBrain/vfb-status/releases/tag/v0.3.0

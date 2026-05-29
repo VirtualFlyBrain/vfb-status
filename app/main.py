@@ -72,6 +72,28 @@ RANCHER_DOMAIN = os.environ.get("RANCHER_DOMAIN", "inf.ed.ac.uk")
 RANCHER_PORT = int(os.environ.get("RANCHER_PORT", "5050"))
 RANCHER_TIMEOUT = float(os.environ.get("RANCHER_TIMEOUT", "5"))
 
+# Rancher cluster overview. Empty RANCHER_PROJECT_URL disables the cluster
+# section entirely. RANCHER_STACKS limits the service-overview to the listed
+# stacks (default vfb-services-live — production). Public-DNS-ingress hosts
+# can be overridden via RANCHER_DNS_HOSTS; otherwise we resolve
+# RANCHER_DNS_HOSTNAME and match the IPs to host.agentIpAddress.
+RANCHER_PROJECT_URL = os.environ.get(
+    "RANCHER_PROJECT_URL",
+    "https://herd.virtualflybrain.org/v2-beta/projects/1a5",
+)
+RANCHER_STACKS = [
+    s.strip()
+    for s in os.environ.get("RANCHER_STACKS", "vfb-services-live").replace(",", " ").split()
+    if s.strip()
+]
+RANCHER_DNS_HOSTNAME = os.environ.get("RANCHER_DNS_HOSTNAME", "virtualflybrain.org")
+RANCHER_DNS_HOSTS = [
+    s.strip()
+    for s in os.environ.get("RANCHER_DNS_HOSTS", "").replace(",", " ").split()
+    if s.strip()
+]
+RANCHER_CLUSTER_TIMEOUT = float(os.environ.get("RANCHER_CLUSTER_TIMEOUT", "20"))
+
 
 # ----- domain types -----------------------------------------------------------
 
@@ -101,6 +123,25 @@ class CheckResult:
 
 
 @dataclass
+class RancherEnumeration:
+    """Optional Rancher v1 API source that enumerates a service's running
+    container instances. When set on a CacheServiceSpec, each container's
+    /status is probed directly via its primaryIpAddress so we don't get a
+    random single backend's view from the LB.
+
+    auth comes from env vars (default RANCHER_API_KEY / RANCHER_API_SECRET).
+    """
+
+    service_url: str            # e.g. https://herd.virtualflybrain.org/v2-beta/projects/1a5/services/1s336
+    container_port: int = 80    # port on the container that exposes /status
+    container_path: str = "/status"
+    container_scheme: str = "http"
+    api_key_env: str = "RANCHER_API_KEY"
+    api_secret_env: str = "RANCHER_API_SECRET"
+    timeout: float = 8.0
+
+
+@dataclass
 class CacheServiceSpec:
     """A caching service whose /status endpoint reports cache counters + connections.
 
@@ -113,6 +154,7 @@ class CacheServiceSpec:
     fronts: str | None = None  # human-readable label of the upstream
     timeout: float = 8.0
     verify_tls: bool = True
+    rancher: RancherEnumeration | None = None
 
 
 @dataclass
@@ -151,6 +193,53 @@ class Neo4jCheck:
     db_error: str | None = None   # from SHOW DATABASES
     node_count: int | None = None
     error: str | None = None
+
+
+@dataclass
+class RancherHost:
+    id: str
+    hostname: str          # full hostname, e.g. "buttermilk.inf.ed.ac.uk"
+    short_name: str        # e.g. "buttermilk"
+    state: str             # "active" | "inactive" | ...
+    agent_state: str | None
+    agent_ip: str | None
+    is_dns_ingress: bool = False
+    has_lb: bool = False
+
+
+@dataclass
+class RancherService:
+    id: str
+    name: str
+    stack: str
+    type: str              # e.g. "service", "loadBalancerService"
+    state: str             # "active" | "inactive" | ...
+    health_state: str | None
+    scale: int | None
+    current_scale: int | None
+
+    @property
+    def is_degraded(self) -> bool:
+        if self.state != "active":
+            return False  # explicitly stopped — not signal
+        if self.health_state and self.health_state != "healthy":
+            return True
+        if (
+            self.scale is not None
+            and self.current_scale is not None
+            and self.current_scale < self.scale
+        ):
+            return True
+        return False
+
+
+@dataclass
+class RancherClusterResult:
+    fetched_at: str
+    ok: bool
+    error: str | None = None
+    hosts: list[RancherHost] = field(default_factory=list)
+    services: list[RancherService] = field(default_factory=list)
 
 
 @dataclass
@@ -219,6 +308,7 @@ class CacheCheck:
     ok: bool
     checked_at: str
     error: str | None = None
+    container: str | None = None   # set when probed via Rancher API per-container
     nginx_healthy: bool | None = None
     upstream_healthy: bool | None = None
     upstream_host: str | None = None
@@ -312,6 +402,18 @@ def load_cache_services(path: Path) -> list[CacheServiceSpec]:
     raw = yaml.safe_load(path.read_text())
     out: list[CacheServiceSpec] = []
     for svc in raw.get("cache_services", []) or []:
+        ranch = None
+        rblk = svc.get("rancher")
+        if rblk:
+            ranch = RancherEnumeration(
+                service_url=rblk["service_url"].rstrip("/"),
+                container_port=int(rblk.get("container_port", 80)),
+                container_path=rblk.get("container_path", "/status"),
+                container_scheme=rblk.get("container_scheme", "http"),
+                api_key_env=rblk.get("api_key_env", "RANCHER_API_KEY"),
+                api_secret_env=rblk.get("api_secret_env", "RANCHER_API_SECRET"),
+                timeout=float(rblk.get("timeout", 8.0)),
+            )
         out.append(
             CacheServiceSpec(
                 name=svc["name"],
@@ -319,6 +421,7 @@ def load_cache_services(path: Path) -> list[CacheServiceSpec]:
                 fronts=svc.get("fronts"),
                 timeout=float(svc.get("timeout", 8.0)),
                 verify_tls=bool(svc.get("verify_tls", True)),
+                rancher=ranch,
             )
         )
     if out:
@@ -417,77 +520,173 @@ async def probe_all(services: Iterable[ServiceSpec]) -> list[CheckResult]:
         return await asyncio.gather(*tasks)
 
 
-async def probe_cache(
-    client_verify: httpx.AsyncClient,
-    client_no_verify: httpx.AsyncClient,
-    svc: CacheServiceSpec,
+def _parse_cache_json(
+    name: str,
+    url: str,
+    body: dict[str, Any],
+    started: str,
+    container: str | None = None,
 ) -> CacheCheck:
-    """Fetch /status JSON. Return a CacheCheck — never raises."""
-    started = datetime.now(timezone.utc).isoformat(timespec="seconds")
-    client = client_verify if svc.verify_tls else client_no_verify
+    health = body.get("health") or {}
+    upstream = body.get("upstream") or {}
+    cache = body.get("cache") or {}
+    conns = body.get("connections") or {}
+    return CacheCheck(
+        name=name,
+        status_url=url,
+        ok=True,
+        checked_at=body.get("updated_at") or started,
+        container=container,
+        nginx_healthy=_to_bool(health.get("nginx")),
+        upstream_healthy=_to_bool(health.get("upstream")),
+        upstream_host=upstream.get("host"),
+        upstream_port=_to_int(upstream.get("port")),
+        cache_total=_to_int(cache.get("total")),
+        cache_hit=_to_int(cache.get("hit")),
+        cache_miss=_to_int(cache.get("miss")),
+        conn_active=_to_int(conns.get("active")),
+        conn_reading=_to_int(conns.get("reading")),
+        conn_writing=_to_int(conns.get("writing")),
+        conn_waiting=_to_int(conns.get("waiting")),
+    )
+
+
+async def _fetch_cache_status(
+    client: httpx.AsyncClient, url: str, timeout: float
+) -> tuple[bool, dict[str, Any] | None, str | None]:
+    """Return (ok, parsed_json, error_message)."""
     try:
         resp = await client.get(
-            svc.status_url,
-            timeout=svc.timeout,
+            url,
+            timeout=timeout,
             follow_redirects=True,
             headers={"User-Agent": USER_AGENT, "Accept": "application/json"},
         )
         if resp.status_code != 200:
-            return CacheCheck(
-                name=svc.name,
-                status_url=svc.status_url,
-                ok=False,
-                checked_at=started,
-                error=f"HTTP {resp.status_code}",
-            )
+            return False, None, f"HTTP {resp.status_code}"
         try:
-            data = resp.json()
+            return True, resp.json(), None
         except Exception as exc:  # noqa: BLE001
-            return CacheCheck(
-                name=svc.name,
-                status_url=svc.status_url,
-                ok=False,
-                checked_at=started,
-                error=f"invalid JSON: {exc}",
-            )
-        health = data.get("health") or {}
-        upstream = data.get("upstream") or {}
-        cache = data.get("cache") or {}
-        conns = data.get("connections") or {}
-        return CacheCheck(
-            name=svc.name,
-            status_url=svc.status_url,
-            ok=True,
-            checked_at=data.get("updated_at") or started,
-            nginx_healthy=_to_bool(health.get("nginx")),
-            upstream_healthy=_to_bool(health.get("upstream")),
-            upstream_host=upstream.get("host"),
-            upstream_port=_to_int(upstream.get("port")),
-            cache_total=_to_int(cache.get("total")),
-            cache_hit=_to_int(cache.get("hit")),
-            cache_miss=_to_int(cache.get("miss")),
-            conn_active=_to_int(conns.get("active")),
-            conn_reading=_to_int(conns.get("reading")),
-            conn_writing=_to_int(conns.get("writing")),
-            conn_waiting=_to_int(conns.get("waiting")),
-            raw=resp.text,
-        )
+            return False, None, f"invalid JSON: {exc}"
     except httpx.TimeoutException:
-        return CacheCheck(
-            name=svc.name,
-            status_url=svc.status_url,
-            ok=False,
-            checked_at=started,
-            error=f"timeout after {svc.timeout}s",
-        )
+        return False, None, f"timeout after {timeout}s"
     except Exception as exc:  # noqa: BLE001
-        return CacheCheck(
-            name=svc.name,
-            status_url=svc.status_url,
-            ok=False,
-            checked_at=started,
-            error=f"{type(exc).__name__}: {exc}",
+        return False, None, f"{type(exc).__name__}: {exc}"
+
+
+async def _rancher_list_instances(
+    client: httpx.AsyncClient, ranch: RancherEnumeration
+) -> tuple[list[dict[str, Any]] | None, str | None]:
+    """Return (instances, error). Each instance has at least 'name' and
+    'primaryIpAddress' from the Rancher v1 API.
+    """
+    key = os.environ.get(ranch.api_key_env, "")
+    secret = os.environ.get(ranch.api_secret_env, "")
+    if not key or not secret:
+        return None, f"missing {ranch.api_key_env} / {ranch.api_secret_env}"
+    try:
+        # The service URL gives us the service object — instances are at
+        # `${service_url}/instances`.
+        url = f"{ranch.service_url}/instances"
+        resp = await client.get(
+            url,
+            timeout=ranch.timeout,
+            auth=(key, secret),
+            headers={"Accept": "application/json", "User-Agent": USER_AGENT},
         )
+        if resp.status_code != 200:
+            return None, f"Rancher API HTTP {resp.status_code}"
+        body = resp.json()
+        raw = body.get("data") or []
+        instances = [
+            {
+                "id": i.get("id"),
+                "name": i.get("name"),
+                "primaryIpAddress": i.get("primaryIpAddress"),
+                "state": i.get("state"),
+                "healthState": i.get("healthState"),
+                "hostId": i.get("hostId"),
+            }
+            for i in raw
+            if i.get("state") == "running"
+        ]
+        return instances, None
+    except httpx.TimeoutException:
+        return None, f"Rancher API timeout after {ranch.timeout}s"
+    except Exception as exc:  # noqa: BLE001
+        return None, f"Rancher API {type(exc).__name__}: {exc}"
+
+
+async def probe_cache(
+    client_verify: httpx.AsyncClient,
+    client_no_verify: httpx.AsyncClient,
+    svc: CacheServiceSpec,
+) -> list[CacheCheck]:
+    """Probe a cache. Returns one CacheCheck per container when the cache has
+    a Rancher enumeration block configured, otherwise a single CacheCheck for
+    the LB-fronted /status. Never raises.
+    """
+    started = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    client = client_verify if svc.verify_tls else client_no_verify
+
+    if svc.rancher is None:
+        ok, body, err = await _fetch_cache_status(client, svc.status_url, svc.timeout)
+        if not ok or body is None:
+            return [
+                CacheCheck(
+                    name=svc.name, status_url=svc.status_url, ok=False,
+                    checked_at=started, error=err,
+                )
+            ]
+        return [_parse_cache_json(svc.name, svc.status_url, body, started)]
+
+    # Rancher API enumeration path.
+    ranch = svc.rancher
+    # The Rancher API itself is HTTPS — always verify there.
+    instances, err = await _rancher_list_instances(client_verify, ranch)
+    if instances is None:
+        # API call failed — log the reason and fall back to a single LB probe
+        # so we don't lose data. Attach the rancher error only if the fallback
+        # itself also failed (so successful cards don't show a fake error).
+        log.warning("cache %s: rancher enumeration failed: %s", svc.name, err)
+        ok, body, ferr = await _fetch_cache_status(client, svc.status_url, svc.timeout)
+        if ok and body is not None:
+            return [_parse_cache_json(svc.name, svc.status_url, body, started)]
+        return [
+            CacheCheck(
+                name=svc.name, status_url=svc.status_url, ok=False,
+                checked_at=started, error=f"{ferr} [rancher: {err}]",
+            )
+        ]
+
+    if not instances:
+        return [
+            CacheCheck(
+                name=svc.name, status_url=svc.status_url, ok=False,
+                checked_at=started, error="Rancher API returned no running instances",
+            )
+        ]
+
+    # Probe every container in parallel, by primaryIpAddress.
+    async def _probe_one(inst: dict[str, Any]) -> CacheCheck:
+        ip = inst.get("primaryIpAddress")
+        cname = inst.get("name") or inst.get("id") or "unknown"
+        if not ip:
+            return CacheCheck(
+                name=svc.name, status_url=svc.status_url, ok=False,
+                checked_at=started, container=cname,
+                error="instance has no primaryIpAddress",
+            )
+        url = f"{ranch.container_scheme}://{ip}:{ranch.container_port}{ranch.container_path}"
+        ok, body, err = await _fetch_cache_status(client, url, ranch.timeout)
+        if not ok or body is None:
+            return CacheCheck(
+                name=svc.name, status_url=url, ok=False,
+                checked_at=started, container=cname, error=err,
+            )
+        return _parse_cache_json(svc.name, url, body, started, container=cname)
+
+    return list(await asyncio.gather(*[_probe_one(i) for i in instances]))
 
 
 def _to_bool(v: Any) -> bool | None:
@@ -513,7 +712,11 @@ async def probe_all_caches(services: Iterable[CacheServiceSpec]) -> list[CacheCh
     if not services:
         return []
     async with httpx.AsyncClient(verify=True) as cv, httpx.AsyncClient(verify=False) as cnv:
-        return await asyncio.gather(*[probe_cache(cv, cnv, s) for s in services])
+        nested = await asyncio.gather(*[probe_cache(cv, cnv, s) for s in services])
+        flat: list[CacheCheck] = []
+        for batch in nested:
+            flat.extend(batch)
+        return flat
 
 
 async def probe_app(
@@ -717,6 +920,159 @@ async def probe_all_neo4j(services: Iterable[Neo4jServiceSpec]) -> list[Neo4jChe
         return await asyncio.gather(*[probe_neo4j(cv, cnv, s) for s in services])
 
 
+# ----- Rancher cluster overview ----------------------------------------------
+
+
+def _short_host_name(hostname: str | None) -> str:
+    return (hostname or "").split(".", 1)[0]
+
+
+async def _resolve_dns_ingress_ips(hostname: str) -> set[str]:
+    """Return the set of A-record IPs for `hostname`. Empty on failure."""
+    if not hostname:
+        return set()
+    try:
+        infos = await asyncio.to_thread(
+            __import__("socket").getaddrinfo,
+            hostname,
+            None,
+            0,
+            __import__("socket").SOCK_STREAM,
+        )
+        return {info[4][0] for info in infos}
+    except Exception as exc:  # noqa: BLE001
+        log.warning("DNS lookup for %s failed: %s", hostname, exc)
+        return set()
+
+
+async def probe_rancher_cluster() -> RancherClusterResult:
+    """Build a cluster overview: every host, plus all `state=active` services
+    within the configured stacks, plus the LB-coverage and DNS-ingress flags
+    per host. Never raises.
+    """
+    started = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    if not RANCHER_PROJECT_URL:
+        return RancherClusterResult(
+            fetched_at=started, ok=False,
+            error="RANCHER_PROJECT_URL is empty — cluster overview disabled",
+        )
+    key = os.environ.get("RANCHER_API_KEY", "")
+    secret = os.environ.get("RANCHER_API_SECRET", "")
+    if not key or not secret:
+        return RancherClusterResult(
+            fetched_at=started, ok=False,
+            error="missing RANCHER_API_KEY / RANCHER_API_SECRET",
+        )
+
+    base = RANCHER_PROJECT_URL.rstrip("/")
+    auth = (key, secret)
+    timeout = RANCHER_CLUSTER_TIMEOUT
+    headers = {"Accept": "application/json", "User-Agent": USER_AGENT}
+
+    async with httpx.AsyncClient(verify=True, auth=auth, headers=headers) as client:
+        async def _get(url: str) -> dict[str, Any] | None:
+            try:
+                resp = await client.get(url, timeout=timeout)
+                if resp.status_code != 200:
+                    log.warning("rancher GET %s -> HTTP %d", url, resp.status_code)
+                    return None
+                return resp.json()
+            except Exception as exc:  # noqa: BLE001
+                log.warning("rancher GET %s failed: %s", url, exc)
+                return None
+
+        hosts_body, _stacks_idx_body = await asyncio.gather(
+            _get(f"{base}/hosts?limit=-1"),
+            _get(f"{base}/stacks?limit=-1"),
+        )
+
+        if hosts_body is None or _stacks_idx_body is None:
+            return RancherClusterResult(
+                fetched_at=started, ok=False,
+                error="Rancher API not reachable (hosts/stacks fetch failed)",
+            )
+
+        # Hosts
+        hosts: list[RancherHost] = []
+        for h in hosts_body.get("data", []) or []:
+            hosts.append(
+                RancherHost(
+                    id=str(h.get("id") or ""),
+                    hostname=str(h.get("hostname") or ""),
+                    short_name=_short_host_name(h.get("hostname")),
+                    state=str(h.get("state") or ""),
+                    agent_state=h.get("agentState"),
+                    agent_ip=h.get("agentIpAddress"),
+                )
+            )
+
+        # DNS ingress
+        if RANCHER_DNS_HOSTS:
+            dns_set = {n.lower() for n in RANCHER_DNS_HOSTS}
+            for h in hosts:
+                h.is_dns_ingress = h.short_name.lower() in dns_set
+        else:
+            ips = await _resolve_dns_ingress_ips(RANCHER_DNS_HOSTNAME)
+            for h in hosts:
+                if h.agent_ip and h.agent_ip in ips:
+                    h.is_dns_ingress = True
+
+        # Services in the configured stacks
+        stacks_by_name = {
+            s.get("name"): s for s in (_stacks_idx_body.get("data") or [])
+        }
+        services: list[RancherService] = []
+        for stack_name in RANCHER_STACKS:
+            stack = stacks_by_name.get(stack_name)
+            if stack is None:
+                log.warning("RANCHER_STACKS: stack %r not found", stack_name)
+                continue
+            stack_id = stack.get("id")
+            body = await _get(f"{base}/stacks/{stack_id}/services?limit=-1")
+            if body is None:
+                continue
+            for s in body.get("data", []) or []:
+                if s.get("state") != "active":
+                    continue
+                services.append(
+                    RancherService(
+                        id=str(s.get("id") or ""),
+                        name=str(s.get("name") or ""),
+                        stack=stack_name,
+                        type=str(s.get("type") or "service"),
+                        state=str(s.get("state") or ""),
+                        health_state=s.get("healthState"),
+                        scale=s.get("scale"),
+                        current_scale=s.get("currentScale"),
+                    )
+                )
+
+        # LB host coverage — find every active loadBalancerService and its
+        # running instances; mark each touched host.
+        lb_services = [
+            s for s in services if s.type == "loadBalancerService"
+        ]
+        lb_host_ids: set[str] = set()
+        for lb in lb_services:
+            inst_body = await _get(f"{base}/services/{lb.id}/instances?limit=-1")
+            if inst_body is None:
+                continue
+            for inst in inst_body.get("data", []) or []:
+                if inst.get("state") != "running":
+                    continue
+                hid = inst.get("hostId")
+                if hid:
+                    lb_host_ids.add(str(hid))
+        for h in hosts:
+            if h.id in lb_host_ids:
+                h.has_lb = True
+
+    return RancherClusterResult(
+        fetched_at=started, ok=True,
+        hosts=hosts, services=services,
+    )
+
+
 # ----- history storage --------------------------------------------------------
 
 
@@ -740,6 +1096,7 @@ class History:
     CREATE TABLE IF NOT EXISTS cache_history (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         service TEXT NOT NULL,
+        container TEXT,
         ts INTEGER NOT NULL,
         checked_at TEXT NOT NULL,
         ok INTEGER NOT NULL,
@@ -758,6 +1115,7 @@ class History:
     );
     CREATE INDEX IF NOT EXISTS idx_cache_service_ts ON cache_history (service, ts);
     CREATE INDEX IF NOT EXISTS idx_cache_ts ON cache_history (ts);
+    CREATE INDEX IF NOT EXISTS idx_cache_service_container_ts ON cache_history (service, container, ts);
 
     CREATE TABLE IF NOT EXISTS app_history (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -798,6 +1156,37 @@ class History:
     );
     CREATE INDEX IF NOT EXISTS idx_neo4j_service_ts ON neo4j_history (service, ts);
     CREATE INDEX IF NOT EXISTS idx_neo4j_ts ON neo4j_history (ts);
+
+    CREATE TABLE IF NOT EXISTS rancher_host_history (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        ts INTEGER NOT NULL,
+        checked_at TEXT NOT NULL,
+        host_id TEXT NOT NULL,
+        hostname TEXT NOT NULL,
+        state TEXT,
+        agent_state TEXT,
+        agent_ip TEXT,
+        is_dns_ingress INTEGER,
+        has_lb INTEGER
+    );
+    CREATE INDEX IF NOT EXISTS idx_rh_host_ts ON rancher_host_history (host_id, ts);
+    CREATE INDEX IF NOT EXISTS idx_rh_ts ON rancher_host_history (ts);
+
+    CREATE TABLE IF NOT EXISTS rancher_service_history (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        ts INTEGER NOT NULL,
+        checked_at TEXT NOT NULL,
+        service_id TEXT NOT NULL,
+        name TEXT NOT NULL,
+        stack TEXT,
+        type TEXT,
+        state TEXT,
+        health_state TEXT,
+        scale INTEGER,
+        current_scale INTEGER
+    );
+    CREATE INDEX IF NOT EXISTS idx_rs_service_ts ON rancher_service_history (service_id, ts);
+    CREATE INDEX IF NOT EXISTS idx_rs_ts ON rancher_service_history (ts);
     """
 
     def __init__(self, path: Path | None) -> None:
@@ -816,6 +1205,7 @@ class History:
             self._conn.execute("PRAGMA journal_mode=WAL")
             self._conn.execute("PRAGMA synchronous=NORMAL")
             self._conn.executescript(self.SCHEMA)
+            self._migrate()
             log.info("history db at %s (writable)", path)
         except OSError as exc:
             # Most likely /data isn't mounted writable. Don't crash the app —
@@ -830,6 +1220,21 @@ class History:
     @property
     def enabled(self) -> bool:
         return self._conn is not None
+
+    def _migrate(self) -> None:
+        """Forward-compatible column adds for existing databases. SQLite's
+        ALTER TABLE only supports ADD COLUMN, which is all we need here.
+        """
+        if self._conn is None:
+            return
+        cols = {r[1] for r in self._conn.execute("PRAGMA table_info(cache_history)")}
+        if "container" not in cols:
+            self._conn.execute("ALTER TABLE cache_history ADD COLUMN container TEXT")
+            self._conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_cache_service_container_ts "
+                "ON cache_history (service, container, ts)"
+            )
+            log.info("history: added container column to cache_history")
 
     def record(self, results: Iterable[CheckResult]) -> None:
         if self._conn is None:
@@ -872,12 +1277,58 @@ class History:
         removed_a = cur.rowcount or 0
         cur.execute("DELETE FROM neo4j_history WHERE ts < ?", (cutoff,))
         removed_n = cur.rowcount or 0
-        if removed_h or removed_c or removed_a or removed_n:
+        cur.execute("DELETE FROM rancher_host_history WHERE ts < ?", (cutoff,))
+        removed_rh = cur.rowcount or 0
+        cur.execute("DELETE FROM rancher_service_history WHERE ts < ?", (cutoff,))
+        removed_rs = cur.rowcount or 0
+        total = removed_h + removed_c + removed_a + removed_n + removed_rh + removed_rs
+        if total:
             log.info(
-                "history: pruned %d svc + %d cache + %d app + %d neo4j rows older than %dd",
-                removed_h, removed_c, removed_a, removed_n, retention_days,
+                "history: pruned %d svc + %d cache + %d app + %d neo4j + %d rh + %d rs older than %dd",
+                removed_h, removed_c, removed_a, removed_n, removed_rh, removed_rs,
+                retention_days,
             )
-        return removed_h + removed_c + removed_a + removed_n
+        return total
+
+    def record_rancher_cluster(self, result: RancherClusterResult) -> None:
+        if self._conn is None or not result.ok:
+            return
+        now = int(time.time())
+        cur = self._conn.cursor()
+        try:
+            cur.execute("BEGIN")
+            cur.executemany(
+                "INSERT INTO rancher_host_history "
+                "(ts, checked_at, host_id, hostname, state, agent_state, agent_ip, "
+                " is_dns_ingress, has_lb) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                [
+                    (
+                        now, result.fetched_at, h.id, h.hostname, h.state,
+                        h.agent_state, h.agent_ip,
+                        1 if h.is_dns_ingress else 0,
+                        1 if h.has_lb else 0,
+                    )
+                    for h in result.hosts
+                ],
+            )
+            cur.executemany(
+                "INSERT INTO rancher_service_history "
+                "(ts, checked_at, service_id, name, stack, type, state, health_state, "
+                " scale, current_scale) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                [
+                    (
+                        now, result.fetched_at, s.id, s.name, s.stack, s.type,
+                        s.state, s.health_state, s.scale, s.current_scale,
+                    )
+                    for s in result.services
+                ],
+            )
+            cur.execute("COMMIT")
+        except Exception:
+            cur.execute("ROLLBACK")
+            raise
 
     def record_neo4j(self, results: Iterable[Neo4jCheck]) -> None:
         if self._conn is None:
@@ -936,6 +1387,7 @@ class History:
         rows = [
             (
                 r.name,
+                r.container,
                 int(time.time()),
                 r.checked_at,
                 1 if r.ok else 0,
@@ -959,10 +1411,10 @@ class History:
             cur.execute("BEGIN")
             cur.executemany(
                 "INSERT INTO cache_history "
-                "(service, ts, checked_at, ok, nginx_healthy, upstream_healthy, "
+                "(service, container, ts, checked_at, ok, nginx_healthy, upstream_healthy, "
                 " upstream_host, upstream_port, cache_total, cache_hit, cache_miss, "
                 " conn_active, conn_reading, conn_writing, conn_waiting, error) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 rows,
             )
             cur.execute("COMMIT")
@@ -973,32 +1425,37 @@ class History:
     def cache_series(
         self, service: str, since_seconds: int, max_points: int = 96
     ) -> list[dict[str, Any]]:
-        """Return up to `max_points` evenly-down-sampled rows for the given cache service.
+        """Return up to `max_points` rows summing across containers per ts.
 
-        Newest first becomes inconvenient for line drawing, so we return oldest-first.
+        Down-sampled, oldest first. Sums null fields gracefully — if every
+        container reports null for a metric the aggregate is null.
         """
         if self._conn is None:
             return []
         cutoff = int(time.time()) - since_seconds
         cur = self._conn.execute(
-            "SELECT ts, ok, nginx_healthy, upstream_healthy, "
-            "cache_total, cache_hit, cache_miss, "
-            "conn_active, conn_reading, conn_writing, conn_waiting "
-            "FROM cache_history WHERE service = ? AND ts >= ? ORDER BY ts ASC",
+            "SELECT ts, "
+            " MAX(ok) AS any_ok, "
+            " SUM(cache_total) AS cache_total, "
+            " SUM(cache_hit) AS cache_hit, "
+            " SUM(cache_miss) AS cache_miss, "
+            " SUM(conn_active) AS conn_active, "
+            " SUM(conn_reading) AS conn_reading, "
+            " SUM(conn_writing) AS conn_writing, "
+            " SUM(conn_waiting) AS conn_waiting "
+            "FROM cache_history WHERE service = ? AND ts >= ? "
+            "GROUP BY ts ORDER BY ts ASC",
             (service, cutoff),
         )
         rows = cur.fetchall()
         if not rows:
             return []
-        # Even down-sample for the chart — never more than max_points.
         step = max(1, len(rows) // max_points)
         sampled = rows[::step]
         return [
             {
                 "ts": ts,
-                "ok": bool(ok),
-                "nginx_healthy": (None if nh is None else bool(nh)),
-                "upstream_healthy": (None if uh is None else bool(uh)),
+                "ok": bool(any_ok) if any_ok is not None else False,
                 "cache_total": ct,
                 "cache_hit": ch,
                 "cache_miss": cm,
@@ -1007,10 +1464,14 @@ class History:
                 "conn_writing": cw,
                 "conn_waiting": cwt,
             }
-            for ts, ok, nh, uh, ct, ch, cm, ca, cr, cw, cwt in sampled
+            for ts, any_ok, ct, ch, cm, ca, cr, cw, cwt in sampled
         ]
 
     def cache_latest(self, service: str) -> dict[str, Any] | None:
+        """Latest row for one cache service. With per-container rows now,
+        this is "any one" — prefer the API-shaped /api/cache output for the
+        aggregate.
+        """
         if self._conn is None:
             return None
         cur = self._conn.execute(
@@ -1214,9 +1675,10 @@ class State:
         self.app_services = app_services or []
         self.neo4j_services = neo4j_services or []
         self.results: dict[str, CheckResult] = {}
-        self.cache_results: dict[str, CacheCheck] = {}
+        self.cache_results: dict[str, list[CacheCheck]] = {}
         self.app_results: dict[str, AppCheck] = {}
         self.neo4j_results: dict[str, Neo4jCheck] = {}
+        self.cluster_result: RancherClusterResult | None = None
         self.last_run: str | None = None
         self.running = False
         self.history = history or History(None)
@@ -1261,20 +1723,23 @@ class State:
                     len(self.cache_services),
                     len(self.app_services),
                 )
-                results, cache_results, app_results, neo4j_results = await asyncio.gather(
+                results, cache_results, app_results, neo4j_results, cluster_result = await asyncio.gather(
                     probe_all(self.services),
                     probe_all_caches(self.cache_services),
                     probe_all_apps(self.app_services),
                     probe_all_neo4j(self.neo4j_services),
+                    probe_rancher_cluster(),
                 )
                 for r in results:
                     self.results[r.name] = r
+                self.cache_results = {}
                 for cr in cache_results:
-                    self.cache_results[cr.name] = cr
+                    self.cache_results.setdefault(cr.name, []).append(cr)
                 for ar in app_results:
                     self.app_results[ar.name] = ar
                 for nr in neo4j_results:
                     self.neo4j_results[nr.name] = nr
+                self.cluster_result = cluster_result
                 self.last_run = datetime.now(timezone.utc).isoformat(timespec="seconds")
                 self.persist()
                 if self.history.enabled:
@@ -1286,16 +1751,31 @@ class State:
                             self.history.record_app(app_results)
                         if neo4j_results:
                             self.history.record_neo4j(neo4j_results)
+                        if cluster_result is not None:
+                            self.history.record_rancher_cluster(cluster_result)
                     except Exception as exc:  # noqa: BLE001
                         log.warning("history write failed: %s", exc)
                 up = sum(1 for r in results if r.status == "up")
                 cache_ok = sum(1 for c in cache_results if c.ok)
+                cache_total = len({c.name for c in cache_results}) or len(self.cache_services)
                 app_ok = sum(1 for a in app_results if a.ok)
                 neo_ok = sum(1 for n in neo4j_results if n.ok)
+                cluster_msg = ""
+                if cluster_result is not None:
+                    if cluster_result.ok:
+                        deg = sum(1 for s in cluster_result.services if s.is_degraded)
+                        cluster_msg = (
+                            f", cluster {len(cluster_result.hosts)} hosts / "
+                            f"{len(cluster_result.services)} active services "
+                            f"({deg} degraded)"
+                        )
+                    else:
+                        cluster_msg = f", cluster: {cluster_result.error}"
                 log.info(
-                    "checks complete: %d/%d up, %d/%d caches, %d/%d apps, %d/%d neo4j",
-                    up, len(results), cache_ok, len(cache_results),
-                    app_ok, len(app_results), neo_ok, len(neo4j_results),
+                    "checks complete: %d/%d up, %d/%d cache rows (%d services), "
+                    "%d/%d apps, %d/%d neo4j%s",
+                    up, len(results), cache_ok, len(cache_results), cache_total,
+                    app_ok, len(app_results), neo_ok, len(neo4j_results), cluster_msg,
                 )
             finally:
                 self.running = False
@@ -1377,10 +1857,30 @@ def _cache_chart_window_seconds() -> int:
 
 
 def _cache_card(state: State, svc: CacheServiceSpec) -> dict[str, Any]:
-    latest = state.cache_results.get(svc.name)
+    containers = state.cache_results.get(svc.name, [])  # list[CacheCheck]
+    # Cluster-level totals from this probe's data.
+    ok_containers = [c for c in containers if c.ok]
+    def _sum(attr: str) -> int | None:
+        vals = [getattr(c, attr) for c in ok_containers if getattr(c, attr) is not None]
+        return sum(vals) if vals else None
+    summary = {
+        "total": _sum("cache_total"),
+        "hit": _sum("cache_hit"),
+        "miss": _sum("cache_miss"),
+        "active": _sum("conn_active"),
+        "reading": _sum("conn_reading"),
+        "writing": _sum("conn_writing"),
+        "waiting": _sum("conn_waiting"),
+    }
+    summary["hit_rate"] = (
+        100.0 * summary["hit"] / summary["total"]
+        if summary["total"] and summary["hit"] is not None
+        else None
+    )
+    summary["container_count"] = len(containers)
+    summary["ok_count"] = len(ok_containers)
+    # Series: aggregate across all containers per ts (sum).
     series = state.history.cache_series(svc.name, _cache_chart_window_seconds(), max_points=120)
-    # Pre-compute SVG-ready normalised points for conn_active (the load indicator)
-    # and cache_total *delta per step* (request-rate proxy).
     active_pts = [(r["ts"], r["conn_active"]) for r in series if r["conn_active"] is not None]
     rate_pts: list[tuple[int, int]] = []
     if len(series) >= 2:
@@ -1393,7 +1893,8 @@ def _cache_card(state: State, svc: CacheServiceSpec) -> dict[str, Any]:
             prev_total = t
     return {
         "spec": svc,
-        "latest": latest,
+        "containers": containers,
+        "summary": summary,
         "series": series,
         "active_pts": active_pts,
         "rate_pts": rate_pts,
@@ -1458,6 +1959,29 @@ async def index(request: Request) -> HTMLResponse:
     cache_cards = [_cache_card(state, s) for s in state.cache_services]
     app_cards = [_app_card(state, s) for s in state.app_services]
     neo4j_cards = [_neo4j_card(state, s) for s in state.neo4j_services]
+    # Cluster overview helpers
+    cluster = state.cluster_result
+    cluster_hosts_by_short = (
+        {h.short_name.lower(): h for h in cluster.hosts}
+        if cluster and cluster.ok
+        else {}
+    )
+    cluster_summary = None
+    cluster_degraded = []
+    cluster_active_lb_hosts = 0
+    if cluster and cluster.ok:
+        cluster_degraded = [s for s in cluster.services if s.is_degraded]
+        cluster_active_lb_hosts = sum(1 for h in cluster.hosts if h.has_lb)
+        active_hosts = sum(1 for h in cluster.hosts if h.state == "active")
+        cluster_summary = {
+            "hosts_total": len(cluster.hosts),
+            "hosts_active": active_hosts,
+            "lb_coverage": cluster_active_lb_hosts,
+            "dns_ingress_count": sum(1 for h in cluster.hosts if h.is_dns_ingress),
+            "services_total": len(cluster.services),
+            "services_degraded": len(cluster_degraded),
+            "stacks": list(RANCHER_STACKS),
+        }
     return templates.TemplateResponse(
         request,
         "index.html",
@@ -1475,6 +1999,10 @@ async def index(request: Request) -> HTMLResponse:
             "cache_cards": cache_cards,
             "app_cards": app_cards,
             "neo4j_cards": neo4j_cards,
+            "cluster": cluster,
+            "cluster_summary": cluster_summary,
+            "cluster_hosts_by_short": cluster_hosts_by_short,
+            "cluster_degraded": cluster_degraded,
         },
     )
 
@@ -1516,34 +2044,112 @@ async def api_history(request: Request, service: str, limit: int = 200) -> JSONR
 
 @app.get("/api/cache")
 async def api_cache(request: Request) -> JSONResponse:
-    """Latest snapshot per cache service."""
+    """Latest snapshot per cache service. When a cache has multiple
+    containers (Rancher enumeration), `containers` lists each one and
+    `summary` is the cluster sum.
+    """
     state: State = request.app.state.state
     out = []
     for svc in state.cache_services:
-        latest = state.cache_results.get(svc.name)
+        containers = state.cache_results.get(svc.name, [])
+        per_container = [
+            {
+                "container": c.container,
+                "ok": c.ok,
+                "checked_at": c.checked_at,
+                "error": c.error,
+                "status_url": c.status_url,
+                "nginx_healthy": c.nginx_healthy,
+                "upstream_healthy": c.upstream_healthy,
+                "upstream_host": c.upstream_host,
+                "upstream_port": c.upstream_port,
+                "cache_total": c.cache_total,
+                "cache_hit": c.cache_hit,
+                "cache_miss": c.cache_miss,
+                "hit_rate": c.hit_rate,
+                "conn_active": c.conn_active,
+                "conn_reading": c.conn_reading,
+                "conn_writing": c.conn_writing,
+                "conn_waiting": c.conn_waiting,
+            }
+            for c in containers
+        ]
+        ok = [c for c in containers if c.ok]
+        def _s(attr: str) -> int | None:
+            vals = [getattr(c, attr) for c in ok if getattr(c, attr) is not None]
+            return sum(vals) if vals else None
+        total = _s("cache_total")
+        hit = _s("cache_hit")
+        summary = {
+            "container_count": len(containers),
+            "ok_count": len(ok),
+            "cache_total": total,
+            "cache_hit": hit,
+            "cache_miss": _s("cache_miss"),
+            "hit_rate": (100.0 * hit / total) if (total and hit is not None) else None,
+            "conn_active": _s("conn_active"),
+            "conn_reading": _s("conn_reading"),
+            "conn_writing": _s("conn_writing"),
+            "conn_waiting": _s("conn_waiting"),
+        }
         out.append(
             {
                 "service": svc.name,
                 "status_url": svc.status_url,
                 "fronts": svc.fronts,
-                "ok": latest.ok if latest else None,
-                "checked_at": latest.checked_at if latest else None,
-                "error": latest.error if latest else None,
-                "nginx_healthy": latest.nginx_healthy if latest else None,
-                "upstream_healthy": latest.upstream_healthy if latest else None,
-                "upstream_host": latest.upstream_host if latest else None,
-                "upstream_port": latest.upstream_port if latest else None,
-                "cache_total": latest.cache_total if latest else None,
-                "cache_hit": latest.cache_hit if latest else None,
-                "cache_miss": latest.cache_miss if latest else None,
-                "hit_rate": latest.hit_rate if latest else None,
-                "conn_active": latest.conn_active if latest else None,
-                "conn_reading": latest.conn_reading if latest else None,
-                "conn_writing": latest.conn_writing if latest else None,
-                "conn_waiting": latest.conn_waiting if latest else None,
+                "rancher_enabled": svc.rancher is not None,
+                "summary": summary,
+                "containers": per_container,
             }
         )
     return JSONResponse({"caches": out})
+
+
+@app.get("/api/cluster")
+async def api_cluster(request: Request) -> JSONResponse:
+    """Rancher cluster overview — hosts (incl. LB coverage + DNS ingress flag)
+    and active services in the configured stacks.
+    """
+    state: State = request.app.state.state
+    r = state.cluster_result
+    if r is None:
+        return JSONResponse({"ok": False, "error": "no cluster probe has completed yet"})
+    return JSONResponse(
+        {
+            "ok": r.ok,
+            "error": r.error,
+            "fetched_at": r.fetched_at,
+            "stacks_watched": list(RANCHER_STACKS),
+            "dns_hostname": RANCHER_DNS_HOSTNAME,
+            "hosts": [
+                {
+                    "id": h.id,
+                    "hostname": h.hostname,
+                    "short_name": h.short_name,
+                    "state": h.state,
+                    "agent_state": h.agent_state,
+                    "agent_ip": h.agent_ip,
+                    "is_dns_ingress": h.is_dns_ingress,
+                    "has_lb": h.has_lb,
+                }
+                for h in r.hosts
+            ],
+            "services": [
+                {
+                    "id": s.id,
+                    "name": s.name,
+                    "stack": s.stack,
+                    "type": s.type,
+                    "state": s.state,
+                    "health_state": s.health_state,
+                    "scale": s.scale,
+                    "current_scale": s.current_scale,
+                    "degraded": s.is_degraded,
+                }
+                for s in r.services
+            ],
+        }
+    )
 
 
 @app.get("/api/neo4j")

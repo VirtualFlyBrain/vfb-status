@@ -179,6 +179,38 @@
     .sparkline-empty, .sparkline-meta { font-size: 0.72rem; color: var(--muted); }
     .sparkline-meta { float: right; }
     .cache-err { color: var(--muted); font-size: 0.85rem; padding: 0.4rem 0; }
+    .container-rows {
+      width: 100%; border-collapse: collapse;
+      font-size: 0.82rem; font-variant-numeric: tabular-nums;
+      margin-top: 0.2rem;
+    }
+    .container-rows th, .container-rows td {
+      text-align: left; padding: 0.25rem 0.4rem;
+      border-bottom: 1px solid var(--border);
+    }
+    .container-rows th { color: var(--muted); font-weight: 600; text-transform: uppercase; font-size: 0.68rem; letter-spacing: 0.04em; }
+    .container-rows tr:last-child td { border-bottom: none; }
+
+    .host-badges { display: inline-flex; gap: 4px; margin-left: 0.4rem; vertical-align: middle; }
+    .badge {
+      display: inline-block; padding: 0.05rem 0.45rem; border-radius: 99px;
+      font-size: 0.66rem; font-weight: 600; text-transform: uppercase;
+      letter-spacing: 0.04em; color: white;
+    }
+    .badge-up { background: var(--up); }
+    .badge-down { background: var(--down); }
+    .badge-info { background: #3a78c8; }
+    .badge-dns { background: #7d4cd0; }
+
+    .cluster-summary {
+      background: var(--card); border: 1px solid var(--border);
+      border-radius: 8px; padding: 0.6rem 0.9rem;
+      color: var(--muted); font-size: 0.9rem;
+    }
+    .cluster-summary strong { color: var(--fg); }
+    .cluster-summary .warn { color: var(--down); }
+    .degraded-table { margin-top: 0.6rem; }
+    td.warn { color: var(--down); font-weight: 600; }
 
     footer { margin-top: 3rem; color: var(--muted); font-size: 0.8rem; text-align: center; }
     footer a { color: inherit; }
@@ -260,6 +292,56 @@
         <span class="sparkline-meta">peak {{ ymax }}, now {{ ys[-1] }}</span>
       {%- endif -%}
     {%- endmacro %}
+
+    {% if cluster_summary %}
+      <section>
+        <h2>Rancher cluster — {{ cluster_summary.stacks|join(', ') }}</h2>
+        <div class="cluster-summary">
+          <span><strong>{{ cluster_summary.hosts_active }}/{{ cluster_summary.hosts_total }}</strong> hosts active</span>
+          ·
+          <span>LB on <strong>{{ cluster_summary.lb_coverage }}/{{ cluster_summary.hosts_total }}</strong></span>
+          ·
+          <span><strong>{{ cluster_summary.dns_ingress_count }}</strong> on public DNS</span>
+          ·
+          <span><strong>{{ cluster_summary.services_total - cluster_summary.services_degraded }}/{{ cluster_summary.services_total }}</strong> services healthy</span>
+          {% if cluster_summary.services_degraded > 0 %}
+            ·
+            <span class="warn"><strong>{{ cluster_summary.services_degraded }}</strong> degraded</span>
+          {% endif %}
+        </div>
+        {% if cluster_degraded %}
+          <table class="container-rows degraded-table">
+            <thead>
+              <tr>
+                <th>service</th>
+                <th>stack</th>
+                <th>type</th>
+                <th>health</th>
+                <th>scale</th>
+                <th>running</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for s in cluster_degraded %}
+                <tr>
+                  <td>{{ s.name }}</td>
+                  <td>{{ s.stack }}</td>
+                  <td>{{ s.type if s.type != 'service' else '' }}</td>
+                  <td><span class="pill down" title="{{ s.health_state or 'unknown' }}">{{ s.health_state or 'unknown' }}</span></td>
+                  <td>{{ s.scale if s.scale is not none else '—' }}</td>
+                  <td class="{% if s.current_scale is not none and s.scale is not none and s.current_scale < s.scale %}warn{% endif %}">{{ s.current_scale if s.current_scale is not none else '—' }}</td>
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        {% endif %}
+      </section>
+    {% elif cluster and not cluster.ok %}
+      <section>
+        <h2>Rancher cluster</h2>
+        <div class="cache-err">{{ cluster.error }}</div>
+      </section>
+    {% endif %}
 
     {% if neo4j_cards %}
       <section>
@@ -375,47 +457,85 @@
         <div class="cache-grid">
           {% for c in cache_cards %}
             {% set spec = c.spec %}
-            {% set l = c.latest %}
+            {% set s = c.summary %}
+            {% set containers = c.containers %}
             <article class="cache-card">
               <header>
                 <div>
                   <a class="cache-name" href="{{ spec.status_url }}" rel="noopener noreferrer" target="_blank">{{ spec.name }}</a>
-                  {% if spec.fronts %}<div class="cache-fronts">in front of {{ spec.fronts }}</div>{% endif %}
+                  <div class="cache-fronts">
+                    {% if spec.fronts %}in front of {{ spec.fronts }} · {% endif %}
+                    {{ s.container_count }} container{{ '' if s.container_count == 1 else 's' }}
+                    ({{ s.ok_count }} ok)
+                  </div>
                 </div>
-                {% if l and l.ok %}
-                  <span class="pill {{ 'up' if l.upstream_healthy else 'down' }}">{{ 'ok' if l.upstream_healthy else 'upstream down' }}</span>
-                {% elif l %}
-                  <span class="pill down" title="{{ l.error or 'no /status' }}">no /status</span>
+                {% if s.ok_count == s.container_count and s.container_count > 0 %}
+                  <span class="pill up">ok</span>
+                {% elif s.ok_count > 0 %}
+                  <span class="pill down" title="{{ s.container_count - s.ok_count }} container(s) failing">partial</span>
                 {% else %}
-                  <span class="pill unknown">no data</span>
+                  <span class="pill down">down</span>
                 {% endif %}
               </header>
 
-              {% if l and l.ok %}
+              {% if s.ok_count > 0 %}
                 <dl class="cache-stats">
-                  <div><dt>active</dt><dd>{{ fmt_int(l.conn_active) }}</dd></div>
-                  <div><dt>reading</dt><dd>{{ fmt_int(l.conn_reading) }}</dd></div>
-                  <div><dt>writing</dt><dd>{{ fmt_int(l.conn_writing) }}</dd></div>
-                  <div><dt>waiting</dt><dd>{{ fmt_int(l.conn_waiting) }}</dd></div>
-                  <div><dt>total req</dt><dd>{{ fmt_int(l.cache_total) }}</dd></div>
-                  <div><dt>hits</dt><dd>{{ fmt_int(l.cache_hit) }}</dd></div>
-                  <div><dt>misses</dt><dd>{{ fmt_int(l.cache_miss) }}</dd></div>
+                  <div><dt>active</dt><dd>{{ fmt_int(s.active) }}</dd></div>
+                  <div><dt>reading</dt><dd>{{ fmt_int(s.reading) }}</dd></div>
+                  <div><dt>writing</dt><dd>{{ fmt_int(s.writing) }}</dd></div>
+                  <div><dt>waiting</dt><dd>{{ fmt_int(s.waiting) }}</dd></div>
+                  <div><dt>total req</dt><dd>{{ fmt_int(s.total) }}</dd></div>
+                  <div><dt>hits</dt><dd>{{ fmt_int(s.hit) }}</dd></div>
+                  <div><dt>misses</dt><dd>{{ fmt_int(s.miss) }}</dd></div>
                   <div>
                     <dt>hit rate</dt>
-                    <dd>{% if l.hit_rate is not none %}{{ "%.1f"|format(l.hit_rate) }}%{% else %}—{% endif %}</dd>
+                    <dd>{% if s.hit_rate is not none %}{{ "%.1f"|format(s.hit_rate) }}%{% else %}—{% endif %}</dd>
                   </div>
                 </dl>
+              {% endif %}
+
+              {% if containers|length > 1 or (containers|length == 1 and containers[0].container) %}
+                <table class="container-rows">
+                  <thead>
+                    <tr>
+                      <th>container</th>
+                      <th>status</th>
+                      <th>total</th>
+                      <th>hit %</th>
+                      <th>active</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {% for cc in containers %}
+                      <tr>
+                        <td>{{ cc.container or '(LB)' }}</td>
+                        <td>
+                          {% if cc.ok %}<span class="pill up">ok</span>{% else %}<span class="pill down" title="{{ cc.error or '' }}">err</span>{% endif %}
+                        </td>
+                        <td>{{ fmt_int(cc.cache_total) }}</td>
+                        <td>{% if cc.hit_rate is not none %}{{ "%.1f"|format(cc.hit_rate) }}%{% else %}—{% endif %}</td>
+                        <td>{{ fmt_int(cc.conn_active) }}</td>
+                      </tr>
+                      {% if cc.error %}
+                        <tr><td colspan="5" class="svc-err">{{ cc.error }}</td></tr>
+                      {% endif %}
+                    {% endfor %}
+                  </tbody>
+                </table>
+              {% endif %}
+
+              {% if s.ok_count > 0 %}
                 <div class="cache-chart">
-                  <div class="chart-label">Active connections</div>
+                  <div class="chart-label">Active connections (cluster)</div>
                   {{ sparkline(c.active_pts, width=320, height=42) }}
                 </div>
                 <div class="cache-chart">
-                  <div class="chart-label">Requests per check (Δ total)</div>
+                  <div class="chart-label">Requests per check (Δ total, cluster)</div>
                   {{ sparkline(c.rate_pts, width=320, height=42, color="var(--down)", fill="rgba(192,57,43,0.12)") }}
                 </div>
               {% else %}
                 <div class="cache-err">
-                  {% if l and l.error %}{{ l.error }}{% else %}/status not reachable — likely an owl_cache image older than 1.1.22. Upgrade to expose cache metrics.{% endif %}
+                  {% if containers and containers[0].error %}{{ containers[0].error }}{% else %}/status not reachable.{% endif %}
                 </div>
               {% endif %}
             </article>
@@ -425,15 +545,28 @@
     {% endif %}
 
     {% for group_name, rows in groups.items() %}
+      {% set is_rancher_group = group_name.startswith("Rancher servers") %}
       <section>
-        <h2>{{ group_name }}</h2>
+        <h2>{{ group_name }}{% if is_rancher_group and cluster_summary %} · LB on {{ cluster_summary.lb_coverage }}/{{ cluster_summary.hosts_total }} · {{ cluster_summary.dns_ingress_count }} on DNS{% endif %}</h2>
         <div class="svc-list">
           {% for row in rows %}
             {% set r = row.result %}
+            {% set rh = none %}
+            {% if is_rancher_group %}
+              {%- set _short = r.name.split('.')[0].lower() -%}
+              {%- set rh = cluster_hosts_by_short.get(_short) -%}
+            {% endif %}
             <div class="svc">
               <div class="svc-status"><span class="pill {{ r.status }}">{{ r.status }}</span></div>
               <div class="svc-name">
                 <a href="{{ r.url }}" rel="noopener noreferrer" target="_blank">{{ r.name }}</a>
+                {% if rh %}
+                  <span class="host-badges">
+                    <span class="badge {{ 'badge-up' if rh.state == 'active' else 'badge-down' }}" title="Rancher state: {{ rh.state }}{% if rh.agent_state %} / agent {{ rh.agent_state }}{% endif %}">rancher: {{ rh.state }}</span>
+                    {% if rh.has_lb %}<span class="badge badge-info" title="vfb-loadbalancer-main running on this host">LB</span>{% endif %}
+                    {% if rh.is_dns_ingress %}<span class="badge badge-dns" title="virtualflybrain.org DNS A-record points at this host's agentIpAddress ({{ rh.agent_ip }})">DNS</span>{% endif %}
+                  </span>
+                {% endif %}
                 {% if r.error %}<div class="svc-err">{{ r.error }}</div>{% endif %}
               </div>
               <div class="svc-meta">
@@ -464,6 +597,7 @@
       <a href="/api/cache">/api/cache</a> ·
       <a href="/api/app">/api/app</a> ·
       <a href="/api/neo4j">/api/neo4j</a> ·
+      <a href="/api/cluster">/api/cluster</a> ·
       <a href="/healthz">/healthz</a> ·
       <a href="https://github.com/VirtualFlyBrain/vfb-status">source</a>
     </footer>
