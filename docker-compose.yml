@@ -22,6 +22,12 @@ services:
       RANCHER_DOMAIN: "inf.ed.ac.uk"
       RANCHER_PORT: "5050"
       RANCHER_TIMEOUT: "5"
+      # Neo4j Cypher API credentials. Required for any entry in the
+      # neo4j_services: block of config/services.yml. NEVER commit the
+      # password into this file — pass it via env, .env file, or rancher
+      # secrets. The default Neo4j username on VFB is "neo4j"; the read-only
+      # password for the public PDB/KB endpoints is set by the deployer.
+      NEO4J_PASSWORD: "${NEO4J_PASSWORD:-}"
     volumes:
       - ./config:/srv/vfb-status/config:ro    # edit services.yml on the host
       - vfb-status-data:/data

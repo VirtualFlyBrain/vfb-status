@@ -157,6 +157,35 @@ cache_services:
     # check). Earlier sandbox probes mis-reported 404 — that was a proxy/route
     # artefact on the probe side, not the cache.
 
+# Neo4j endpoints — verify both that the database is online AND that it has
+# data. Two-stage probe:
+#   1. SHOW DATABASES against /db/system  — checks currentStatus == 'online'.
+#   2. MATCH (n) RETURN count(n)          — checks count >= min_nodes.
+#
+# The existing /browser/ entries in groups: only prove the HTTP listener is
+# up — they don't catch the case where the load failed and the database is
+# empty or offline.
+#
+# Credentials come from env. Set NEO4J_PASSWORD on the container (or
+# per-service password_env: if PDB and KB ever diverge).
+neo4j_services:
+  - name: PDB Neo4j (pdb.virtualflybrain.org)
+    base_url: https://pdb.virtualflybrain.org
+    db: neo4j
+    user: neo4j
+    password_env: NEO4J_PASSWORD
+    min_nodes: 1000000      # PDB docs quote 1.1M+ nodes; alert if below 1M
+    timeout: 20
+    fronts: Production Database (knowledge graph)
+  - name: KB Neo4j (kb.virtualflybrain.org)
+    base_url: https://kb.virtualflybrain.org
+    db: neo4j
+    user: neo4j
+    password_env: NEO4J_PASSWORD
+    min_nodes: 1
+    timeout: 20
+    fronts: Knowledge Base (curation graph)
+
 # Application services exposing their own /status JSON (shape: vfbquery, ...).
 # Probed on the same schedule as everything else; metrics stored in
 # `app_history` and rendered as cards with sparklines on the page.

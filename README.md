@@ -28,6 +28,8 @@ The page auto-refreshes every 60 s. Endpoints:
 - `GET /api/cache/history?service=<name>&since_seconds=86400&max_points=200` — down-sampled cache time series
 - `GET /api/app` — latest snapshot of every application service (`shape: vfbquery` etc.)
 - `GET /api/app/history?service=<name>&since_seconds=86400&max_points=200` — down-sampled app time series
+- `GET /api/neo4j` — latest snapshot per Neo4j database, including `db_status`, `node_count`, and any Neo4j start-up error
+- `GET /api/neo4j/history?service=<name>&since_seconds=86400&max_points=200` — down-sampled Neo4j time series
 - `GET /healthz` — liveness for Rancher / Docker
 - `POST /refresh` — force an immediate re-probe of every service
 
@@ -77,6 +79,27 @@ app_services:
 ```
 
 Metrics persist in the `app_history` table. The page card shows the live counters plus inline sparklines for active requests, queued requests, and Δ `total_served` per check (request rate). Adding a new shape is a small change: define how to parse the fields you care about and how to render them.
+
+## Neo4j databases (`neo4j_services:`)
+
+The `/browser/` endpoint of a Neo4j server returns 200 even when its database is empty or refusing to start. The `neo4j_services:` block runs a two-stage Cypher probe to catch the silent-failure case:
+
+1. `SHOW DATABASES` against `/db/system/tx/commit` — verifies `currentStatus == "online"` for the target database. If the database is offline, Neo4j's own start-up error is captured (e.g. `"Unable to start DatabaseId{...[neo4j]}."`) and shown on the page.
+2. `MATCH (n) RETURN count(n)` against `/db/{db}/tx/commit` — verifies the node count is at least `min_nodes`.
+
+Credentials come from environment variables — set `NEO4J_PASSWORD` on the container (or per-service `password_env:` if PDB and KB diverge). The YAML never contains the password.
+
+```yaml
+neo4j_services:
+  - name: PDB Neo4j (pdb.virtualflybrain.org)
+    base_url: https://pdb.virtualflybrain.org
+    db: neo4j
+    user: neo4j
+    password_env: NEO4J_PASSWORD
+    min_nodes: 1000000      # alert if the load truncated the graph
+```
+
+The page card shows the current node count, the configured `min_nodes`, Neo4j's reported `db_status`, and a sparkline of node count over time (so big-bang DB rebuilds are visible). Results persist in the `neo4j_history` table.
 
 ## Configuration
 

@@ -261,6 +261,54 @@
       {%- endif -%}
     {%- endmacro %}
 
+    {% if neo4j_cards %}
+      <section>
+        <h2>Neo4j databases — content checks</h2>
+        <div class="cache-grid">
+          {% for c in neo4j_cards %}
+            {% set spec = c.spec %}
+            {% set l = c.latest %}
+            <article class="cache-card">
+              <header>
+                <div>
+                  <a class="cache-name" href="{{ spec.base_url }}/browser/" rel="noopener noreferrer" target="_blank">{{ spec.name }}</a>
+                  <div class="cache-fronts">{% if spec.fronts %}{{ spec.fronts }} · {% endif %}db={{ spec.db }} · min_nodes={{ "{:,}".format(spec.min_nodes) }}</div>
+                </div>
+                {% if l and l.ok %}
+                  <span class="pill up">online</span>
+                {% elif l %}
+                  <span class="pill down" title="{{ l.error or 'down' }}">{{ l.db_status or 'down' }}</span>
+                {% else %}
+                  <span class="pill unknown">no data</span>
+                {% endif %}
+              </header>
+
+              {% if l %}
+                <dl class="cache-stats">
+                  <div><dt>db status</dt><dd>{{ l.db_status or '—' }}</dd></div>
+                  <div><dt>nodes</dt><dd>{% if l.node_count is not none %}{{ "{:,}".format(l.node_count) }}{% else %}—{% endif %}</dd></div>
+                  <div><dt>min nodes</dt><dd>{{ "{:,}".format(spec.min_nodes) }}</dd></div>
+                  <div><dt>latency</dt><dd>{% if l.latency_ms is not none %}{{ l.latency_ms }} ms{% else %}—{% endif %}</dd></div>
+                </dl>
+                {% if l.error %}
+                  <div class="cache-err">{{ l.error }}</div>
+                {% endif %}
+                {% if l.db_error %}
+                  <div class="cache-err">Neo4j: {{ l.db_error }}</div>
+                {% endif %}
+                <div class="cache-chart">
+                  <div class="chart-label">Node count over time</div>
+                  {{ sparkline(c.count_pts, width=320, height=42, color="#7d4cd0", fill="rgba(125,76,208,0.15)") }}
+                </div>
+              {% else %}
+                <div class="cache-err">no data yet — first probe pending</div>
+              {% endif %}
+            </article>
+          {% endfor %}
+        </div>
+      </section>
+    {% endif %}
+
     {% if app_cards %}
       <section>
         <h2>Application services — /status</h2>
@@ -415,6 +463,7 @@
       <a href="/api/uptime">/api/uptime</a> ·
       <a href="/api/cache">/api/cache</a> ·
       <a href="/api/app">/api/app</a> ·
+      <a href="/api/neo4j">/api/neo4j</a> ·
       <a href="/healthz">/healthz</a> ·
       <a href="https://github.com/VirtualFlyBrain/vfb-status">source</a>
     </footer>

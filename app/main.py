@@ -116,6 +116,44 @@ class CacheServiceSpec:
 
 
 @dataclass
+class Neo4jServiceSpec:
+    """A Neo4j endpoint we want to verify is online + has data.
+
+    Probe sequence:
+    1. SHOW DATABASES against {base_url}/db/system/tx/commit — verify the
+       target database's currentStatus is 'online'.
+    2. MATCH (n) RETURN count(n) AS n against {base_url}/db/{db}/tx/commit
+       — verify count >= min_nodes.
+
+    Credentials come from env vars to keep the YAML free of secrets.
+    """
+
+    name: str
+    base_url: str
+    db: str = "neo4j"
+    user: str = "neo4j"
+    password_env: str = "NEO4J_PASSWORD"
+    min_nodes: int = 1
+    timeout: float = 15.0
+    verify_tls: bool = True
+    fronts: str | None = None
+
+
+@dataclass
+class Neo4jCheck:
+    name: str
+    base_url: str
+    db: str
+    ok: bool
+    checked_at: str
+    latency_ms: int | None = None
+    db_status: str | None = None  # "online" | "offline" | other Neo4j states
+    db_error: str | None = None   # from SHOW DATABASES
+    node_count: int | None = None
+    error: str | None = None
+
+
+@dataclass
 class AppServiceSpec:
     """An application service exposing its own JSON /status.
 
@@ -227,6 +265,28 @@ def load_services(path: Path) -> list[ServiceSpec]:
             )
     log.info("loaded %d services from %s", len(services), path)
     return services
+
+
+def load_neo4j_services(path: Path) -> list[Neo4jServiceSpec]:
+    raw = yaml.safe_load(path.read_text())
+    out: list[Neo4jServiceSpec] = []
+    for svc in raw.get("neo4j_services", []) or []:
+        out.append(
+            Neo4jServiceSpec(
+                name=svc["name"],
+                base_url=svc["base_url"].rstrip("/"),
+                db=svc.get("db", "neo4j"),
+                user=svc.get("user", "neo4j"),
+                password_env=svc.get("password_env", "NEO4J_PASSWORD"),
+                min_nodes=int(svc.get("min_nodes", 1)),
+                timeout=float(svc.get("timeout", 15.0)),
+                verify_tls=bool(svc.get("verify_tls", True)),
+                fronts=svc.get("fronts"),
+            )
+        )
+    if out:
+        log.info("loaded %d neo4j services from %s", len(out), path)
+    return out
 
 
 def load_app_services(path: Path) -> list[AppServiceSpec]:
@@ -532,6 +592,131 @@ async def probe_all_apps(services: Iterable[AppServiceSpec]) -> list[AppCheck]:
         return await asyncio.gather(*[probe_app(cv, cnv, s) for s in services])
 
 
+async def probe_neo4j(
+    client_verify: httpx.AsyncClient,
+    client_no_verify: httpx.AsyncClient,
+    svc: Neo4jServiceSpec,
+) -> Neo4jCheck:
+    """Two-stage Neo4j health: SHOW DATABASES + MATCH count.
+
+    Never raises. The whole check is "up" iff:
+    - HTTP requests succeed,
+    - SHOW DATABASES reports currentStatus == 'online' for svc.db,
+    - MATCH count returns at least svc.min_nodes.
+    """
+    started = datetime.now(timezone.utc)
+    iso_started = started.isoformat(timespec="seconds")
+    client = client_verify if svc.verify_tls else client_no_verify
+    password = os.environ.get(svc.password_env, "")
+    auth = (svc.user, password) if password else None
+
+    async def _cypher(url: str, statement: str) -> tuple[int, Any, str | None]:
+        try:
+            resp = await client.post(
+                url,
+                timeout=svc.timeout,
+                json={"statements": [{"statement": statement}]},
+                headers={"User-Agent": USER_AGENT, "Accept": "application/json"},
+                auth=auth,
+            )
+            try:
+                return resp.status_code, resp.json(), None
+            except Exception as exc:  # noqa: BLE001
+                return resp.status_code, None, f"non-JSON response: {exc}"
+        except httpx.TimeoutException:
+            return 0, None, f"timeout after {svc.timeout}s"
+        except Exception as exc:  # noqa: BLE001
+            return 0, None, f"{type(exc).__name__}: {exc}"
+
+    # 1) DB status from system db
+    sys_url = f"{svc.base_url}/db/system/tx/commit"
+    code, body, err = await _cypher(sys_url, "SHOW DATABASES")
+    if err:
+        return Neo4jCheck(
+            name=svc.name, base_url=svc.base_url, db=svc.db, ok=False,
+            checked_at=iso_started, error=f"SHOW DATABASES: {err}",
+        )
+    if code != 200 or not body:
+        return Neo4jCheck(
+            name=svc.name, base_url=svc.base_url, db=svc.db, ok=False,
+            checked_at=iso_started, error=f"SHOW DATABASES HTTP {code}",
+        )
+    db_status: str | None = None
+    db_error: str | None = None
+    for r in (body.get("results") or [{}])[0].get("data", []):
+        row = r.get("row") or []
+        # Columns: name, address, role, requestedStatus, currentStatus, error, default
+        if len(row) >= 6 and row[0] == svc.db:
+            db_status = row[4]
+            db_error = row[5] or None
+            break
+    if db_status is None:
+        return Neo4jCheck(
+            name=svc.name, base_url=svc.base_url, db=svc.db, ok=False,
+            checked_at=iso_started,
+            db_status=None,
+            error=f"database '{svc.db}' not found in SHOW DATABASES",
+        )
+    if db_status != "online":
+        return Neo4jCheck(
+            name=svc.name, base_url=svc.base_url, db=svc.db, ok=False,
+            checked_at=iso_started,
+            db_status=db_status,
+            db_error=db_error,
+            error=f"db '{svc.db}' is {db_status}" + (f": {db_error}" if db_error else ""),
+        )
+
+    # 2) Node count
+    data_url = f"{svc.base_url}/db/{svc.db}/tx/commit"
+    code, body, err = await _cypher(data_url, "MATCH (n) RETURN count(n) AS n")
+    latency_ms = int((datetime.now(timezone.utc) - started).total_seconds() * 1000)
+    if err:
+        return Neo4jCheck(
+            name=svc.name, base_url=svc.base_url, db=svc.db, ok=False,
+            checked_at=iso_started, latency_ms=latency_ms,
+            db_status=db_status, db_error=db_error,
+            error=f"count: {err}",
+        )
+    if code != 200 or not body:
+        return Neo4jCheck(
+            name=svc.name, base_url=svc.base_url, db=svc.db, ok=False,
+            checked_at=iso_started, latency_ms=latency_ms,
+            db_status=db_status, db_error=db_error,
+            error=f"count HTTP {code}",
+        )
+    count: int | None = None
+    try:
+        count = int(body["results"][0]["data"][0]["row"][0])
+    except (KeyError, IndexError, ValueError, TypeError):
+        return Neo4jCheck(
+            name=svc.name, base_url=svc.base_url, db=svc.db, ok=False,
+            checked_at=iso_started, latency_ms=latency_ms,
+            db_status=db_status, db_error=db_error,
+            error="could not parse count from Cypher response",
+        )
+    if count < svc.min_nodes:
+        return Neo4jCheck(
+            name=svc.name, base_url=svc.base_url, db=svc.db, ok=False,
+            checked_at=iso_started, latency_ms=latency_ms,
+            db_status=db_status, db_error=db_error,
+            node_count=count,
+            error=f"count {count} < min_nodes {svc.min_nodes}",
+        )
+    return Neo4jCheck(
+        name=svc.name, base_url=svc.base_url, db=svc.db, ok=True,
+        checked_at=iso_started, latency_ms=latency_ms,
+        db_status=db_status, db_error=db_error,
+        node_count=count,
+    )
+
+
+async def probe_all_neo4j(services: Iterable[Neo4jServiceSpec]) -> list[Neo4jCheck]:
+    if not services:
+        return []
+    async with httpx.AsyncClient(verify=True) as cv, httpx.AsyncClient(verify=False) as cnv:
+        return await asyncio.gather(*[probe_neo4j(cv, cnv, s) for s in services])
+
+
 # ----- history storage --------------------------------------------------------
 
 
@@ -598,6 +783,21 @@ class History:
     );
     CREATE INDEX IF NOT EXISTS idx_app_service_ts ON app_history (service, ts);
     CREATE INDEX IF NOT EXISTS idx_app_ts ON app_history (ts);
+
+    CREATE TABLE IF NOT EXISTS neo4j_history (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        service TEXT NOT NULL,
+        ts INTEGER NOT NULL,
+        checked_at TEXT NOT NULL,
+        ok INTEGER NOT NULL,
+        db_status TEXT,
+        db_error TEXT,
+        node_count INTEGER,
+        latency_ms INTEGER,
+        error TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_neo4j_service_ts ON neo4j_history (service, ts);
+    CREATE INDEX IF NOT EXISTS idx_neo4j_ts ON neo4j_history (ts);
     """
 
     def __init__(self, path: Path | None) -> None:
@@ -670,12 +870,65 @@ class History:
         removed_c = cur.rowcount or 0
         cur.execute("DELETE FROM app_history WHERE ts < ?", (cutoff,))
         removed_a = cur.rowcount or 0
-        if removed_h or removed_c or removed_a:
+        cur.execute("DELETE FROM neo4j_history WHERE ts < ?", (cutoff,))
+        removed_n = cur.rowcount or 0
+        if removed_h or removed_c or removed_a or removed_n:
             log.info(
-                "history: pruned %d service + %d cache + %d app rows older than %dd",
-                removed_h, removed_c, removed_a, retention_days,
+                "history: pruned %d svc + %d cache + %d app + %d neo4j rows older than %dd",
+                removed_h, removed_c, removed_a, removed_n, retention_days,
             )
-        return removed_h + removed_c + removed_a
+        return removed_h + removed_c + removed_a + removed_n
+
+    def record_neo4j(self, results: Iterable[Neo4jCheck]) -> None:
+        if self._conn is None:
+            return
+        rows = [
+            (
+                r.name,
+                int(time.time()),
+                r.checked_at,
+                1 if r.ok else 0,
+                r.db_status,
+                r.db_error,
+                r.node_count,
+                r.latency_ms,
+                r.error,
+            )
+            for r in results
+        ]
+        cur = self._conn.cursor()
+        try:
+            cur.execute("BEGIN")
+            cur.executemany(
+                "INSERT INTO neo4j_history "
+                "(service, ts, checked_at, ok, db_status, db_error, node_count, latency_ms, error) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                rows,
+            )
+            cur.execute("COMMIT")
+        except Exception:
+            cur.execute("ROLLBACK")
+            raise
+
+    def neo4j_series(
+        self, service: str, since_seconds: int, max_points: int = 120
+    ) -> list[dict[str, Any]]:
+        if self._conn is None:
+            return []
+        cutoff = int(time.time()) - since_seconds
+        cur = self._conn.execute(
+            "SELECT ts, ok, db_status, node_count, latency_ms "
+            "FROM neo4j_history WHERE service = ? AND ts >= ? ORDER BY ts ASC",
+            (service, cutoff),
+        )
+        rows = cur.fetchall()
+        if not rows:
+            return []
+        step = max(1, len(rows) // max_points)
+        return [
+            {"ts": ts, "ok": bool(ok), "db_status": s, "node_count": n, "latency_ms": l}
+            for ts, ok, s, n, l in rows[::step]
+        ]
 
     def record_cache(self, results: Iterable[CacheCheck]) -> None:
         if self._conn is None:
@@ -953,14 +1206,17 @@ class State:
         services: list[ServiceSpec],
         cache_services: list[CacheServiceSpec] | None = None,
         app_services: list[AppServiceSpec] | None = None,
+        neo4j_services: list[Neo4jServiceSpec] | None = None,
         history: History | None = None,
     ):
         self.services = services
         self.cache_services = cache_services or []
         self.app_services = app_services or []
+        self.neo4j_services = neo4j_services or []
         self.results: dict[str, CheckResult] = {}
         self.cache_results: dict[str, CacheCheck] = {}
         self.app_results: dict[str, AppCheck] = {}
+        self.neo4j_results: dict[str, Neo4jCheck] = {}
         self.last_run: str | None = None
         self.running = False
         self.history = history or History(None)
@@ -1005,10 +1261,11 @@ class State:
                     len(self.cache_services),
                     len(self.app_services),
                 )
-                results, cache_results, app_results = await asyncio.gather(
+                results, cache_results, app_results, neo4j_results = await asyncio.gather(
                     probe_all(self.services),
                     probe_all_caches(self.cache_services),
                     probe_all_apps(self.app_services),
+                    probe_all_neo4j(self.neo4j_services),
                 )
                 for r in results:
                     self.results[r.name] = r
@@ -1016,6 +1273,8 @@ class State:
                     self.cache_results[cr.name] = cr
                 for ar in app_results:
                     self.app_results[ar.name] = ar
+                for nr in neo4j_results:
+                    self.neo4j_results[nr.name] = nr
                 self.last_run = datetime.now(timezone.utc).isoformat(timespec="seconds")
                 self.persist()
                 if self.history.enabled:
@@ -1025,14 +1284,18 @@ class State:
                             self.history.record_cache(cache_results)
                         if app_results:
                             self.history.record_app(app_results)
+                        if neo4j_results:
+                            self.history.record_neo4j(neo4j_results)
                     except Exception as exc:  # noqa: BLE001
                         log.warning("history write failed: %s", exc)
                 up = sum(1 for r in results if r.status == "up")
                 cache_ok = sum(1 for c in cache_results if c.ok)
                 app_ok = sum(1 for a in app_results if a.ok)
+                neo_ok = sum(1 for n in neo4j_results if n.ok)
                 log.info(
-                    "checks complete: %d/%d up, %d/%d caches ok, %d/%d apps ok",
-                    up, len(results), cache_ok, len(cache_results), app_ok, len(app_results),
+                    "checks complete: %d/%d up, %d/%d caches, %d/%d apps, %d/%d neo4j",
+                    up, len(results), cache_ok, len(cache_results),
+                    app_ok, len(app_results), neo_ok, len(neo4j_results),
                 )
             finally:
                 self.running = False
@@ -1046,12 +1309,14 @@ async def lifespan(app: FastAPI):  # type: ignore[no-untyped-def]
     services = load_services(CONFIG_PATH) + rancher_server_specs()
     cache_services = load_cache_services(CONFIG_PATH)
     app_services = load_app_services(CONFIG_PATH)
+    neo4j_services = load_neo4j_services(CONFIG_PATH)
     history = History(HISTORY_DB)
     history.prune(HISTORY_RETENTION_DAYS)
     state = State(
         services,
         cache_services=cache_services,
         app_services=app_services,
+        neo4j_services=neo4j_services,
         history=history,
     )
     state.load_from_disk()
@@ -1135,6 +1400,20 @@ def _cache_card(state: State, svc: CacheServiceSpec) -> dict[str, Any]:
     }
 
 
+def _neo4j_card(state: State, svc: Neo4jServiceSpec) -> dict[str, Any]:
+    latest = state.neo4j_results.get(svc.name)
+    series = state.history.neo4j_series(
+        svc.name, _cache_chart_window_seconds(), max_points=120
+    )
+    count_pts = [(r["ts"], r["node_count"]) for r in series if r["node_count"] is not None]
+    return {
+        "spec": svc,
+        "latest": latest,
+        "series": series,
+        "count_pts": count_pts,
+    }
+
+
 def _app_card(state: State, svc: AppServiceSpec) -> dict[str, Any]:
     latest = state.app_results.get(svc.name)
     series = state.history.app_series(
@@ -1178,6 +1457,7 @@ async def index(request: Request) -> HTMLResponse:
     down = sum(1 for r in state.results.values() if r.status == "down")
     cache_cards = [_cache_card(state, s) for s in state.cache_services]
     app_cards = [_app_card(state, s) for s in state.app_services]
+    neo4j_cards = [_neo4j_card(state, s) for s in state.neo4j_services]
     return templates.TemplateResponse(
         request,
         "index.html",
@@ -1194,6 +1474,7 @@ async def index(request: Request) -> HTMLResponse:
             "history_bucket_seconds": HISTORY_BUCKET_SECONDS,
             "cache_cards": cache_cards,
             "app_cards": app_cards,
+            "neo4j_cards": neo4j_cards,
         },
     )
 
@@ -1263,6 +1544,52 @@ async def api_cache(request: Request) -> JSONResponse:
             }
         )
     return JSONResponse({"caches": out})
+
+
+@app.get("/api/neo4j")
+async def api_neo4j(request: Request) -> JSONResponse:
+    """Latest snapshot per Neo4j service."""
+    state: State = request.app.state.state
+    out = []
+    for svc in state.neo4j_services:
+        l = state.neo4j_results.get(svc.name)
+        out.append(
+            {
+                "service": svc.name,
+                "base_url": svc.base_url,
+                "db": svc.db,
+                "fronts": svc.fronts,
+                "min_nodes": svc.min_nodes,
+                "ok": l.ok if l else None,
+                "checked_at": l.checked_at if l else None,
+                "latency_ms": l.latency_ms if l else None,
+                "db_status": l.db_status if l else None,
+                "db_error": l.db_error if l else None,
+                "node_count": l.node_count if l else None,
+                "error": l.error if l else None,
+            }
+        )
+    return JSONResponse({"neo4j": out})
+
+
+@app.get("/api/neo4j/history")
+async def api_neo4j_history(
+    request: Request, service: str, since_seconds: int = 86400, max_points: int = 200
+) -> JSONResponse:
+    state: State = request.app.state.state
+    if not state.history.enabled:
+        raise HTTPException(status_code=404, detail="history is disabled")
+    if not any(n.name == service for n in state.neo4j_services):
+        raise HTTPException(status_code=404, detail=f"unknown neo4j service: {service}")
+    return JSONResponse(
+        {
+            "service": service,
+            "since_seconds": since_seconds,
+            "series": state.history.neo4j_series(
+                service, max(60, since_seconds), max_points=max(2, min(max_points, 2000))
+            ),
+        }
+    )
 
 
 @app.get("/api/app")

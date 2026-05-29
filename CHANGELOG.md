@@ -2,7 +2,25 @@
 
 All notable changes to vfb-status are recorded here. The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.4.1] — 2026-05-29
+## [0.5.0] — 2026-05-29
+
+Catch the "load failed, DB empty, /browser/ still 200" failure mode on the VFB Neo4j endpoints.
+
+### Added
+
+- New `neo4j_services:` block in `config/services.yml`. Each entry triggers a two-stage probe:
+  1. `SHOW DATABASES` against `/db/system/tx/commit` — verifies the target database's `currentStatus == "online"`. Surfaces Neo4j's own start-up error verbatim when offline.
+  2. `MATCH (n) RETURN count(n)` against `/db/{db}/tx/commit` — verifies the node count is at least `min_nodes`.
+- New `neo4j_history` SQLite table with one row per probe (`ok`, `db_status`, `db_error`, `node_count`, `latency_ms`).
+- New "Neo4j databases — content checks" section on the page. Per-DB card with status pill, current node count, configured `min_nodes`, latency, surfaced errors, and a node-count sparkline so DB rebuilds are visible.
+- New endpoints: `GET /api/neo4j` (latest snapshot per DB) and `GET /api/neo4j/history?service=<name>` (down-sampled time series).
+- New env var: `NEO4J_PASSWORD` for the Cypher API. Per-service override via `password_env:`. The YAML never contains the password.
+
+### Why
+
+The existing `/browser/` HTTP checks for PDB and KB only proved the Neo4j HTTP listener was alive. When a database load failed, the listener still responded 200 on `/browser/` but the DB was empty or refused to start. The two-stage probe catches this — verified live against the currently-offline KB Neo4j, which reports `currentStatus: "offline"` with error `"Unable to start \`DatabaseId{...[neo4j]}\`."`.
+
+## [0.4.1] — 2026-05-29 (folded into 0.5.0)
 
 ### Changed
 
@@ -77,7 +95,7 @@ Initial release. Self-contained Docker uptime tracker for public-facing Virtual 
 - Four subdomains (`nas0`, `iip3d`, `nblast`, `abd1-5.catmaid`) ship with `verify_tls: false` because the production cert SAN doesn't cover them. The servers are up; the cert provisioning is a separate problem.
 - Kubernetes nodes are intentionally not handled here — separate checks planned for a later release.
 
-[0.4.1]: https://github.com/VirtualFlyBrain/vfb-status/releases/tag/v0.4.1
+[0.5.0]: https://github.com/VirtualFlyBrain/vfb-status/releases/tag/v0.5.0
 [0.4.0]: https://github.com/VirtualFlyBrain/vfb-status/releases/tag/v0.4.0
 [0.3.0]: https://github.com/VirtualFlyBrain/vfb-status/releases/tag/v0.3.0
 [0.2.0]: https://github.com/VirtualFlyBrain/vfb-status/releases/tag/v0.2.0
