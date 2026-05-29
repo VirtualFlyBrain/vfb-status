@@ -2,6 +2,13 @@
 
 All notable changes to vfb-status are recorded here. The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.2] — 2026-05-29
+
+### Changed
+
+- Bake VFB's public read-only Neo4j credentials (`neo4j` / `vfb`) into `config/services.yml` so the deployed status container doesn't need `NEO4J_PASSWORD` set. The `password_env` field still wins when the env var is set, so password rotation and non-VFB deployments keep working unchanged. Documented inline that the embedded credential is the published read-only pair from the VFBconnect docs.
+- Page distinguishes auth failure from DB-down: when the Neo4j probe error contains `401` / `Unauthorized` / `auth`, the card shows an amber `auth?` pill instead of red `down`. Hover tooltip points at the `password:` / `NEO4J_PASSWORD` config.
+
 ## [0.7.1] — 2026-05-29
 
 ### Fixed
@@ -144,6 +151,7 @@ Initial release. Self-contained Docker uptime tracker for public-facing Virtual 
 - Four subdomains (`nas0`, `iip3d`, `nblast`, `abd1-5.catmaid`) ship with `verify_tls: false` because the production cert SAN doesn't cover them. The servers are up; the cert provisioning is a separate problem.
 - Kubernetes nodes are intentionally not handled here — separate checks planned for a later release.
 
+[0.7.2]: https://github.com/VirtualFlyBrain/vfb-status/releases/tag/v0.7.2
 [0.7.1]: https://github.com/VirtualFlyBrain/vfb-status/releases/tag/v0.7.1
 [0.7.0]: https://github.com/VirtualFlyBrain/vfb-status/releases/tag/v0.7.0
 [0.6.0]: https://github.com/VirtualFlyBrain/vfb-status/releases/tag/v0.6.0

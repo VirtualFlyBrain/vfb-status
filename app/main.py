@@ -175,6 +175,7 @@ class Neo4jServiceSpec:
     db: str = "neo4j"
     user: str = "neo4j"
     password_env: str = "NEO4J_PASSWORD"
+    password: str = ""           # used when password_env is empty / unset
     min_nodes: int = 1
     timeout: float = 15.0
     verify_tls: bool = True
@@ -368,6 +369,7 @@ def load_neo4j_services(path: Path) -> list[Neo4jServiceSpec]:
                 db=svc.get("db", "neo4j"),
                 user=svc.get("user", "neo4j"),
                 password_env=svc.get("password_env", "NEO4J_PASSWORD"),
+                password=str(svc.get("password", "") or ""),
                 min_nodes=int(svc.get("min_nodes", 1)),
                 timeout=float(svc.get("timeout", 15.0)),
                 verify_tls=bool(svc.get("verify_tls", True)),
@@ -810,7 +812,10 @@ async def probe_neo4j(
     started = datetime.now(timezone.utc)
     iso_started = started.isoformat(timespec="seconds")
     client = client_verify if svc.verify_tls else client_no_verify
-    password = os.environ.get(svc.password_env, "")
+    # Env var wins (allows secret rotation without a redeploy); fall back to
+    # the YAML-embedded password (used when the credentials are intentionally
+    # public, e.g. VFB's read-only neo4j:vfb).
+    password = os.environ.get(svc.password_env, "") or svc.password
     auth = (svc.user, password) if password else None
 
     async def _cypher(url: str, statement: str) -> tuple[int, Any, str | None]:

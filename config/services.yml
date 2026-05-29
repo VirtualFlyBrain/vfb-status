@@ -134,28 +134,47 @@ groups:
         url: https://upload.virtualflybrain.org/
         expect_status: [200, 301, 302, 401, 403, 404]
 
-# Caching services — each exposes /status (JSON) from virtualflybrain/owl_cache.
-# We probe /status on the same schedule and store the cache counters +
-# connection stats in the `cache_history` SQLite table for the load-over-time
-# chart.
+# Caching services. Each entry has TWO probe paths:
+#   1. status_url — fallback single-LB probe (used when rancher: isn't set or
+#      when the Rancher API call fails).
+#   2. rancher:  — if present, enumerate the service's container instances via
+#      the Rancher v1 API and probe each container's /status directly. This is
+#      the right thing to do for any service with scale > 1 — the LB only ever
+#      shows one random backend's view.
 #
-# Scheme matters: owl.virtualflybrain.org and iip3d.virtualflybrain.org are
-# bound by the rancher LB on port 80 only (their HTTPS hits a default Hugo 404
-# route). v3-cached.virtualflybrain.org is HTTPS. Don't second-guess these —
-# check rancher-compose `lb_config -> ... -> protocol:` if you change them.
+# Required env on the deployed container for the rancher: paths to work:
+#   RANCHER_API_KEY    — environment-scoped Rancher API key (read-only is fine)
+#   RANCHER_API_SECRET — secret for the above
+#
+# The container_port (default 80) is the port the container exposes /status
+# on (NOT the rancher LB port). 80 matches the owl_cache image's nginx.
 cache_services:
   - name: VFB3 cache (v3-cached.virtualflybrain.org)
     status_url: https://v3-cached.virtualflybrain.org/status
     fronts: vfbquery.virtualflybrain.org
+    rancher:
+      service_url: https://herd.virtualflybrain.org/v2-beta/projects/1a5/services/1s337
+      container_port: 80
+      container_path: /status
   - name: Owlery cache (owl.virtualflybrain.org)
     status_url: http://owl.virtualflybrain.org/status
     fronts: owlery (Nico-Pipeline/vfb-owlery)
+    rancher:
+      service_url: https://herd.virtualflybrain.org/v2-beta/projects/1a5/services/1s336
+      container_port: 80
+      container_path: /status
   - name: IIP3D cache (iip3d.virtualflybrain.org)
     status_url: http://iip3d.virtualflybrain.org/status
     fronts: iip3d image server
-    # Live deployment confirms /status is reachable here (91% hit rate at last
-    # check). Earlier sandbox probes mis-reported 404 — that was a proxy/route
-    # artefact on the probe side, not the cache.
+    rancher:
+      service_url: https://herd.virtualflybrain.org/v2-beta/projects/1a5/services/1s338
+      container_port: 80
+      container_path: /status
+
+# Not in cache_services: query-cache-server (1s322) is a SOLR cache, not an
+# owl_cache nginx. The existing SOLR entry in groups: already covers it; if
+# we want per-instance SOLR metrics later, that needs a different probe shape
+# against the Solr admin API.
 
 # Neo4j endpoints — verify both that the database is online AND that it has
 # data. Two-stage probe:
@@ -166,14 +185,18 @@ cache_services:
 # up — they don't catch the case where the load failed and the database is
 # empty or offline.
 #
-# Credentials come from env. Set NEO4J_PASSWORD on the container (or
-# per-service password_env: if PDB and KB ever diverge).
+# Credentials: VFB publishes the read-only `neo4j` / `vfb` pair as a known
+# public credential (vfbconnect docs, tutorials, etc.). It's safe to ship in
+# this repo. The env var (`password_env`, default NEO4J_PASSWORD) still wins
+# if set on the container, so any future rotation / non-VFB deploy can use
+# secrets without touching the YAML.
 neo4j_services:
   - name: PDB Neo4j (pdb.virtualflybrain.org)
     base_url: https://pdb.virtualflybrain.org
     db: neo4j
     user: neo4j
-    password_env: NEO4J_PASSWORD
+    password: vfb                  # public read-only credential
+    password_env: NEO4J_PASSWORD   # env wins if set
     min_nodes: 1000000      # PDB docs quote 1.1M+ nodes; alert if below 1M
     timeout: 20
     fronts: Production Database (knowledge graph)
@@ -181,7 +204,8 @@ neo4j_services:
     base_url: https://kb.virtualflybrain.org
     db: neo4j
     user: neo4j
-    password_env: NEO4J_PASSWORD
+    password: vfb                  # public read-only credential
+    password_env: NEO4J_PASSWORD   # env wins if set
     min_nodes: 1
     timeout: 20
     fronts: Knowledge Base (curation graph)

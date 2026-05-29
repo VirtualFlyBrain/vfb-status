@@ -81,6 +81,7 @@
     .pill.up { background: var(--up); }
     .pill.down { background: var(--down); }
     .pill.unknown { background: var(--unknown); }
+    .pill.auth { background: #d18a16; }
     .svc-err { color: var(--down); font-size: 0.8rem; }
 
     .strip {
@@ -358,6 +359,8 @@
                 </div>
                 {% if l and l.ok %}
                   <span class="pill up">online</span>
+                {% elif l and l.error and ('401' in l.error or 'Unauthorized' in l.error or 'auth' in l.error|lower) %}
+                  <span class="pill auth" title="{{ l.error }} — check the credentials (`password:` in services.yml or NEO4J_PASSWORD env)">auth?</span>
                 {% elif l %}
                   <span class="pill down" title="{{ l.error or 'down' }}">{{ l.db_status or 'down' }}</span>
                 {% else %}
