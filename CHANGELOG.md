@@ -2,6 +2,16 @@
 
 All notable changes to vfb-status are recorded here. The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.1] — 2026-05-29
+
+### Changed
+
+- `HISTORY_DB` is now **on by default** at `/data/history.db`. Set `HISTORY_DB=""` (explicit empty string) to disable. This fixes the recurring footgun where the deployed status page silently ran without history because the env var wasn't propagated through the rancher service definition.
+
+### Fixed
+
+- A non-writable `HISTORY_DB` path no longer kills the app — history is disabled cleanly and a clear ERROR is logged explaining what to mount and where.
+
 ## [0.4.0] — 2026-05-27
 
 Add application-service `/status` tracking (VFBquery shape).
@@ -67,6 +77,7 @@ Initial release. Self-contained Docker uptime tracker for public-facing Virtual 
 - Four subdomains (`nas0`, `iip3d`, `nblast`, `abd1-5.catmaid`) ship with `verify_tls: false` because the production cert SAN doesn't cover them. The servers are up; the cert provisioning is a separate problem.
 - Kubernetes nodes are intentionally not handled here — separate checks planned for a later release.
 
+[0.4.1]: https://github.com/VirtualFlyBrain/vfb-status/releases/tag/v0.4.1
 [0.4.0]: https://github.com/VirtualFlyBrain/vfb-status/releases/tag/v0.4.0
 [0.3.0]: https://github.com/VirtualFlyBrain/vfb-status/releases/tag/v0.3.0
 [0.2.0]: https://github.com/VirtualFlyBrain/vfb-status/releases/tag/v0.2.0

@@ -10,7 +10,7 @@ services:
       CHECK_INTERVAL_SECONDS: "3600"          # hourly probes
       CONFIG_PATH: "/srv/vfb-status/config/services.yml"
       STATE_FILE: "/data/state.json"          # last-known snapshot, survives restarts
-      HISTORY_DB: "/data/history.db"          # SQLite history on mounted volume
+      HISTORY_DB: "/data/history.db"          # default; set "" to disable
       HISTORY_RETENTION_DAYS: "365"           # 0 = keep forever
       HISTORY_BUCKETS: "72"                   # status-strip width on the page
       HISTORY_BUCKET_SECONDS: "3600"          # one bucket = 1 hour

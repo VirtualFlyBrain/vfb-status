@@ -87,7 +87,7 @@ Environment variables (set in `docker-compose.yml`):
 | `CHECK_INTERVAL_SECONDS` | `3600` | Seconds between scheduled probe runs. |
 | `CONFIG_PATH` | `config/services.yml` | Path to the service list inside the container. |
 | `STATE_FILE` | `/data/state.json` | Optional. Persists last-known results across restarts. Unset = in-memory only. |
-| `HISTORY_DB` | `/data/history.db` | SQLite database for long-term probe history. Mount the parent directory as a volume to retain history across container rebuilds. Empty = history disabled, strip hidden, uptime % shown as "—". |
+| `HISTORY_DB` | `/data/history.db` | SQLite database for long-term probe history. **On by default** — set to `""` to disable. Mount `/data` (or whatever path you choose) as a persistent volume so history survives container rebuilds. If the path isn't writable, history is disabled automatically and a clear error is logged. |
 | `HISTORY_RETENTION_DAYS` | `365` | Rows older than this are pruned on startup and once a day. `0` = keep forever. |
 | `HISTORY_BUCKETS` | `72` | Number of buckets in the status strip on the page. |
 | `HISTORY_BUCKET_SECONDS` | `3600` | One bucket = this many seconds. Default 1 h × 72 = 3 days of history visible inline. |

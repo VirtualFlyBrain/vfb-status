@@ -48,8 +48,11 @@ STATE_FILE = Path(os.environ.get("STATE_FILE", "")) if os.environ.get("STATE_FIL
 CHECK_INTERVAL_SECONDS = int(os.environ.get("CHECK_INTERVAL_SECONDS", str(60 * 60)))
 USER_AGENT = "vfb-status/1.0 (+https://github.com/VirtualFlyBrain/vfb-status)"
 
-# History storage on the mounted volume. Empty / unset disables history.
-HISTORY_DB = Path(os.environ.get("HISTORY_DB", "")) if os.environ.get("HISTORY_DB") else None
+# History storage on the mounted volume. On by default at /data/history.db
+# so a bare `docker run` with a `-v` mount picks up history without extra
+# configuration. Explicitly set HISTORY_DB="" to disable.
+_HISTORY_DB_RAW = os.environ.get("HISTORY_DB", "/data/history.db")
+HISTORY_DB = Path(_HISTORY_DB_RAW) if _HISTORY_DB_RAW else None
 # Retention: trim rows older than this on startup and once a day. 0 = keep forever.
 HISTORY_RETENTION_DAYS = int(os.environ.get("HISTORY_RETENTION_DAYS", "365"))
 # Status-strip width on the page (one block per bucket, default 1 h per block).
@@ -600,7 +603,10 @@ class History:
     def __init__(self, path: Path | None) -> None:
         self.path = path
         self._conn: sqlite3.Connection | None = None
-        if path is not None:
+        if path is None:
+            log.warning("history is disabled (HISTORY_DB explicitly empty)")
+            return
+        try:
             path.parent.mkdir(parents=True, exist_ok=True)
             self._conn = sqlite3.connect(
                 str(path),
@@ -610,7 +616,16 @@ class History:
             self._conn.execute("PRAGMA journal_mode=WAL")
             self._conn.execute("PRAGMA synchronous=NORMAL")
             self._conn.executescript(self.SCHEMA)
-            log.info("history db at %s", path)
+            log.info("history db at %s (writable)", path)
+        except OSError as exc:
+            # Most likely /data isn't mounted writable. Don't crash the app —
+            # just disable history and surface the reason loudly on the page.
+            self._conn = None
+            log.error(
+                "history disabled: cannot open %s (%s). "
+                "Mount a persistent volume at %s and ensure it is writable.",
+                path, exc, path.parent,
+            )
 
     @property
     def enabled(self) -> bool:
