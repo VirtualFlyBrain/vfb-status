@@ -2,6 +2,16 @@
 
 All notable changes to vfb-status are recorded here. The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.1] — 2026-05-29
+
+Rancher API is now the authoritative source for rancher_servers row status. The `:5050` cowcheck probe is kept (for history + the latency column) but no longer drives the up/down pill on its own.
+
+### Changed
+
+- `RANCHER_TIMEOUT` default bumped from **5 s → 20 s** so transient slowness on the cowcheck endpoint doesn't flash hosts red.
+- Rancher servers section: each row's pill now comes from `cluster_result.hosts[h].state`. When Rancher reports `active`, the row shows **up** even if the `:5050` probe timed out — the cowcheck error is kept as a note. When Rancher reports anything other than `active`, the row shows **down** regardless of the probe.
+- Top-of-page `X up · Y down` counts recomputed after the override, so the headline matches what's actually rendered below.
+
 ## [0.8.0] — 2026-05-29
 
 Per-container probing for `app_services` (specifically VFBquery, which now runs `scale: 4`). Same Rancher v1 API pattern we built for `cache_services` in v0.6.0.
@@ -185,6 +195,7 @@ Initial release. Self-contained Docker uptime tracker for public-facing Virtual 
 - Four subdomains (`nas0`, `iip3d`, `nblast`, `abd1-5.catmaid`) ship with `verify_tls: false` because the production cert SAN doesn't cover them. The servers are up; the cert provisioning is a separate problem.
 - Kubernetes nodes are intentionally not handled here — separate checks planned for a later release.
 
+[0.8.1]: https://github.com/VirtualFlyBrain/vfb-status/releases/tag/v0.8.1
 [0.8.0]: https://github.com/VirtualFlyBrain/vfb-status/releases/tag/v0.8.0
 [0.7.3]: https://github.com/VirtualFlyBrain/vfb-status/releases/tag/v0.7.3
 [0.7.2]: https://github.com/VirtualFlyBrain/vfb-status/releases/tag/v0.7.2

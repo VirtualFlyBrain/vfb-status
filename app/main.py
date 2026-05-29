@@ -71,7 +71,7 @@ RANCHER_SERVERS = [
 ]
 RANCHER_DOMAIN = os.environ.get("RANCHER_DOMAIN", "inf.ed.ac.uk")
 RANCHER_PORT = int(os.environ.get("RANCHER_PORT", "5050"))
-RANCHER_TIMEOUT = float(os.environ.get("RANCHER_TIMEOUT", "5"))
+RANCHER_TIMEOUT = float(os.environ.get("RANCHER_TIMEOUT", "20"))
 
 # Rancher cluster overview. Empty RANCHER_PROJECT_URL disables the cluster
 # section entirely. RANCHER_STACKS limits the service-overview to the listed
@@ -2178,15 +2178,52 @@ def _safe_service_row(state: State, svc: ServiceSpec) -> dict[str, Any]:
         }
 
 
+def _override_row_with_cluster(
+    row: dict[str, Any], svc: ServiceSpec, cluster_hosts_by_short: dict[str, "RancherHost"]
+) -> dict[str, Any]:
+    """When a rancher_servers row has a matching host in the Rancher API
+    cluster view, the API state is authoritative. The :5050 HTTP probe is
+    kept for history + the meta column but no longer drives the pill — a
+    slow or unreachable cowcheck endpoint shouldn't paint the host red when
+    Rancher itself reports it active.
+    """
+    if not svc.group.startswith("Rancher servers"):
+        return row
+    short = svc.name.split(".", 1)[0].lower()
+    host = cluster_hosts_by_short.get(short)
+    if host is None:
+        return row
+    r = row["result"]
+    if host.state == "active":
+        # Override pill to up; preserve original error in a note for context.
+        r.status = "up"
+        if r.error:
+            r.error = f"cowcheck :5050 — {r.error} (Rancher says host active)"
+    else:
+        r.status = "down"
+        r.error = f"Rancher state: {host.state}"
+    return row
+
+
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request) -> HTMLResponse:
     state: State = request.app.state.state
+    cluster_hosts_by_short_for_override = (
+        {h.short_name.lower(): h for h in state.cluster_result.hosts}
+        if state.cluster_result and state.cluster_result.ok
+        else {}
+    )
     grouped: dict[str, list[dict[str, Any]]] = {}
     for svc in state.services:
-        grouped.setdefault(svc.group, []).append(_safe_service_row(state, svc))
+        row = _safe_service_row(state, svc)
+        row = _override_row_with_cluster(row, svc, cluster_hosts_by_short_for_override)
+        grouped.setdefault(svc.group, []).append(row)
     total = len(state.services)
-    up = sum(1 for r in state.results.values() if r.status == "up")
-    down = sum(1 for r in state.results.values() if r.status == "down")
+    # Recompute from the (possibly cluster-overridden) rows so the headline
+    # numbers match the pills shown in the rancher_servers section.
+    all_rows = [r for rows in grouped.values() for r in rows]
+    up = sum(1 for r in all_rows if r["result"].status == "up")
+    down = sum(1 for r in all_rows if r["result"].status == "down")
     cache_cards = [_cache_card(state, s) for s in state.cache_services]
     app_cards = [_app_card(state, s) for s in state.app_services]
     neo4j_cards = [_neo4j_card(state, s) for s in state.neo4j_services]
