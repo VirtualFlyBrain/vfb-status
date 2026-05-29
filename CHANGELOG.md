@@ -2,6 +2,12 @@
 
 All notable changes to vfb-status are recorded here. The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.1] — 2026-05-29
+
+### Fixed
+
+- Startup crash on upgrade from v0.5.0 or earlier: `sqlite3.OperationalError: no such column: container`. The cache_history container-column index was declared in the main SCHEMA, which executescript runs *before* `_migrate()` ALTERs the column in. Moved the index creation into `_migrate()` so it runs after the ALTER. Fresh installs are unaffected.
+
 ## [0.7.0] — 2026-05-29
 
 Rancher cluster overview, host augmentation, DNS-ingress flag.
@@ -138,6 +144,7 @@ Initial release. Self-contained Docker uptime tracker for public-facing Virtual 
 - Four subdomains (`nas0`, `iip3d`, `nblast`, `abd1-5.catmaid`) ship with `verify_tls: false` because the production cert SAN doesn't cover them. The servers are up; the cert provisioning is a separate problem.
 - Kubernetes nodes are intentionally not handled here — separate checks planned for a later release.
 
+[0.7.1]: https://github.com/VirtualFlyBrain/vfb-status/releases/tag/v0.7.1
 [0.7.0]: https://github.com/VirtualFlyBrain/vfb-status/releases/tag/v0.7.0
 [0.6.0]: https://github.com/VirtualFlyBrain/vfb-status/releases/tag/v0.6.0
 [0.5.0]: https://github.com/VirtualFlyBrain/vfb-status/releases/tag/v0.5.0

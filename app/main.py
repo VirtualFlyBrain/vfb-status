@@ -1115,7 +1115,10 @@ class History:
     );
     CREATE INDEX IF NOT EXISTS idx_cache_service_ts ON cache_history (service, ts);
     CREATE INDEX IF NOT EXISTS idx_cache_ts ON cache_history (ts);
-    CREATE INDEX IF NOT EXISTS idx_cache_service_container_ts ON cache_history (service, container, ts);
+    -- NOTE: idx_cache_service_container_ts lives in _migrate() so the
+    -- `container` column has been ALTER-ed in on upgrades from <0.6.0 before
+    -- the index is created. SCHEMA must not reference columns that may not
+    -- yet exist on legacy databases.
 
     CREATE TABLE IF NOT EXISTS app_history (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1224,17 +1227,23 @@ class History:
     def _migrate(self) -> None:
         """Forward-compatible column adds for existing databases. SQLite's
         ALTER TABLE only supports ADD COLUMN, which is all we need here.
+
+        Runs AFTER the main SCHEMA executescript, so any new tables already
+        exist. Indexes that reference newly-added columns are created here
+        rather than in SCHEMA — putting them in SCHEMA crashes on upgrade
+        because executescript runs before this migration.
         """
         if self._conn is None:
             return
         cols = {r[1] for r in self._conn.execute("PRAGMA table_info(cache_history)")}
         if "container" not in cols:
             self._conn.execute("ALTER TABLE cache_history ADD COLUMN container TEXT")
-            self._conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_cache_service_container_ts "
-                "ON cache_history (service, container, ts)"
-            )
             log.info("history: added container column to cache_history")
+        # Always assert — safe IF NOT EXISTS, covers fresh installs too.
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_cache_service_container_ts "
+            "ON cache_history (service, container, ts)"
+        )
 
     def record(self, results: Iterable[CheckResult]) -> None:
         if self._conn is None:
