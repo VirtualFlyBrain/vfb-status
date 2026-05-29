@@ -258,6 +258,7 @@ class AppServiceSpec:
     fronts: str | None = None
     timeout: float = 8.0
     verify_tls: bool = True
+    rancher: "RancherEnumeration | None" = None
 
 
 @dataclass
@@ -272,6 +273,7 @@ class AppCheck:
     ok: bool
     checked_at: str
     error: str | None = None
+    container: str | None = None   # set when probed per-container via Rancher API
 
     # vfbquery shape
     q_status: str | None = None
@@ -386,6 +388,18 @@ def load_app_services(path: Path) -> list[AppServiceSpec]:
     raw = yaml.safe_load(path.read_text())
     out: list[AppServiceSpec] = []
     for svc in raw.get("app_services", []) or []:
+        ranch = None
+        rblk = svc.get("rancher")
+        if rblk:
+            ranch = RancherEnumeration(
+                service_url=rblk["service_url"].rstrip("/"),
+                container_port=int(rblk.get("container_port", 80)),
+                container_path=rblk.get("container_path", "/status"),
+                container_scheme=rblk.get("container_scheme", "http"),
+                api_key_env=rblk.get("api_key_env", "RANCHER_API_KEY"),
+                api_secret_env=rblk.get("api_secret_env", "RANCHER_API_SECRET"),
+                timeout=float(rblk.get("timeout", 8.0)),
+            )
         out.append(
             AppServiceSpec(
                 name=svc["name"],
@@ -394,6 +408,7 @@ def load_app_services(path: Path) -> list[AppServiceSpec]:
                 fronts=svc.get("fronts"),
                 timeout=float(svc.get("timeout", 8.0)),
                 verify_tls=bool(svc.get("verify_tls", True)),
+                rancher=ranch,
             )
         )
     if out:
@@ -722,80 +737,133 @@ async def probe_all_caches(services: Iterable[CacheServiceSpec]) -> list[CacheCh
         return flat
 
 
+def _parse_app_json(
+    svc: AppServiceSpec, url: str, data: dict[str, Any], started: str,
+    container: str | None = None, raw: str | None = None,
+) -> AppCheck:
+    if svc.shape == "vfbquery":
+        solr_cache = data.get("solr_cache") or {}
+        return AppCheck(
+            name=svc.name, status_url=url, shape=svc.shape,
+            ok=True, checked_at=started, container=container,
+            q_status=data.get("status"),
+            q_workers=_to_int(data.get("workers")),
+            q_max_concurrent=_to_int(data.get("max_concurrent")),
+            q_max_queue_depth=_to_int(data.get("max_queue_depth")),
+            q_active=_to_int(data.get("active")),
+            q_waiting=_to_int(data.get("waiting")),
+            q_total_served=_to_int(data.get("total_served")),
+            q_cache_size=_to_int(data.get("cache_size")),
+            q_cache_hits=_to_int(data.get("cache_hits")),
+            q_coalesced_total=_to_int(data.get("coalesced_total")),
+            q_coalesced_in_flight=_to_int(data.get("coalesced_in_flight")),
+            q_scanner_blocked=_to_int(data.get("scanner_probes_blocked")),
+            q_solr_cache_enabled=_to_bool(solr_cache.get("enabled")),
+            raw=raw,
+        )
+    return AppCheck(
+        name=svc.name, status_url=url, shape=svc.shape,
+        ok=True, checked_at=started, container=container, raw=raw,
+    )
+
+
+async def _fetch_app_status(
+    client: httpx.AsyncClient, url: str, timeout: float,
+) -> tuple[bool, dict[str, Any] | None, str | None]:
+    try:
+        resp = await client.get(
+            url, timeout=timeout, follow_redirects=True,
+            headers={"User-Agent": USER_AGENT, "Accept": "application/json"},
+        )
+        if resp.status_code != 200:
+            return False, None, f"HTTP {resp.status_code}"
+        try:
+            return True, resp.json(), None
+        except Exception as exc:  # noqa: BLE001
+            return False, None, f"invalid JSON: {exc}"
+    except httpx.TimeoutException:
+        return False, None, f"timeout after {timeout}s"
+    except Exception as exc:  # noqa: BLE001
+        return False, None, f"{type(exc).__name__}: {exc}"
+
+
 async def probe_app(
     client_verify: httpx.AsyncClient,
     client_no_verify: httpx.AsyncClient,
     svc: AppServiceSpec,
-) -> AppCheck:
-    """Fetch an application service's /status JSON. Never raises."""
+) -> list[AppCheck]:
+    """Probe an application service's /status JSON. Returns one AppCheck per
+    container when a Rancher enumeration block is set, else a single
+    LB-fronted AppCheck. Never raises.
+    """
     started = datetime.now(timezone.utc).isoformat(timespec="seconds")
     client = client_verify if svc.verify_tls else client_no_verify
-    try:
-        resp = await client.get(
-            svc.status_url,
-            timeout=svc.timeout,
-            follow_redirects=True,
-            headers={"User-Agent": USER_AGENT, "Accept": "application/json"},
-        )
-        if resp.status_code != 200:
+
+    if svc.rancher is None:
+        ok, data, err = await _fetch_app_status(client, svc.status_url, svc.timeout)
+        if not ok or data is None:
+            return [
+                AppCheck(
+                    name=svc.name, status_url=svc.status_url, shape=svc.shape,
+                    ok=False, checked_at=started, error=err,
+                )
+            ]
+        return [_parse_app_json(svc, svc.status_url, data, started)]
+
+    # Rancher API enumeration — same pattern as probe_cache.
+    ranch = svc.rancher
+    instances, rerr = await _rancher_list_instances(client_verify, ranch)
+    if instances is None:
+        log.warning("app %s: rancher enumeration failed: %s", svc.name, rerr)
+        ok, data, err = await _fetch_app_status(client, svc.status_url, svc.timeout)
+        if ok and data is not None:
+            return [_parse_app_json(svc, svc.status_url, data, started)]
+        return [
+            AppCheck(
+                name=svc.name, status_url=svc.status_url, shape=svc.shape,
+                ok=False, checked_at=started, error=f"{err} [rancher: {rerr}]",
+            )
+        ]
+
+    if not instances:
+        return [
+            AppCheck(
+                name=svc.name, status_url=svc.status_url, shape=svc.shape,
+                ok=False, checked_at=started,
+                error="Rancher API returned no running instances",
+            )
+        ]
+
+    async def _probe_one(inst: dict[str, Any]) -> AppCheck:
+        ip = inst.get("primaryIpAddress")
+        cname = inst.get("name") or inst.get("id") or "unknown"
+        if not ip:
             return AppCheck(
                 name=svc.name, status_url=svc.status_url, shape=svc.shape,
-                ok=False, checked_at=started, error=f"HTTP {resp.status_code}",
+                ok=False, checked_at=started, container=cname,
+                error="instance has no primaryIpAddress",
             )
-        try:
-            data = resp.json()
-        except Exception as exc:  # noqa: BLE001
+        url = f"{ranch.container_scheme}://{ip}:{ranch.container_port}{ranch.container_path}"
+        ok, data, err = await _fetch_app_status(client, url, ranch.timeout)
+        if not ok or data is None:
             return AppCheck(
-                name=svc.name, status_url=svc.status_url, shape=svc.shape,
-                ok=False, checked_at=started, error=f"invalid JSON: {exc}",
+                name=svc.name, status_url=url, shape=svc.shape,
+                ok=False, checked_at=started, container=cname, error=err,
             )
+        return _parse_app_json(svc, url, data, started, container=cname)
 
-        if svc.shape == "vfbquery":
-            solr_cache = data.get("solr_cache") or {}
-            return AppCheck(
-                name=svc.name,
-                status_url=svc.status_url,
-                shape=svc.shape,
-                ok=True,
-                checked_at=started,
-                q_status=data.get("status"),
-                q_workers=_to_int(data.get("workers")),
-                q_max_concurrent=_to_int(data.get("max_concurrent")),
-                q_max_queue_depth=_to_int(data.get("max_queue_depth")),
-                q_active=_to_int(data.get("active")),
-                q_waiting=_to_int(data.get("waiting")),
-                q_total_served=_to_int(data.get("total_served")),
-                q_cache_size=_to_int(data.get("cache_size")),
-                q_cache_hits=_to_int(data.get("cache_hits")),
-                q_coalesced_total=_to_int(data.get("coalesced_total")),
-                q_coalesced_in_flight=_to_int(data.get("coalesced_in_flight")),
-                q_scanner_blocked=_to_int(data.get("scanner_probes_blocked")),
-                q_solr_cache_enabled=_to_bool(solr_cache.get("enabled")),
-                raw=resp.text,
-            )
-
-        # Unknown shape — record raw only.
-        return AppCheck(
-            name=svc.name, status_url=svc.status_url, shape=svc.shape,
-            ok=True, checked_at=started, raw=resp.text,
-        )
-    except httpx.TimeoutException:
-        return AppCheck(
-            name=svc.name, status_url=svc.status_url, shape=svc.shape,
-            ok=False, checked_at=started, error=f"timeout after {svc.timeout}s",
-        )
-    except Exception as exc:  # noqa: BLE001
-        return AppCheck(
-            name=svc.name, status_url=svc.status_url, shape=svc.shape,
-            ok=False, checked_at=started, error=f"{type(exc).__name__}: {exc}",
-        )
+    return list(await asyncio.gather(*[_probe_one(i) for i in instances]))
 
 
 async def probe_all_apps(services: Iterable[AppServiceSpec]) -> list[AppCheck]:
     if not services:
         return []
     async with httpx.AsyncClient(verify=True) as cv, httpx.AsyncClient(verify=False) as cnv:
-        return await asyncio.gather(*[probe_app(cv, cnv, s) for s in services])
+        nested = await asyncio.gather(*[probe_app(cv, cnv, s) for s in services])
+        flat: list[AppCheck] = []
+        for batch in nested:
+            flat.extend(batch)
+        return flat
 
 
 async def probe_neo4j(
@@ -1130,6 +1198,7 @@ class History:
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         service TEXT NOT NULL,
         shape TEXT NOT NULL,
+        container TEXT,
         ts INTEGER NOT NULL,
         checked_at TEXT NOT NULL,
         ok INTEGER NOT NULL,
@@ -1150,6 +1219,9 @@ class History:
     );
     CREATE INDEX IF NOT EXISTS idx_app_service_ts ON app_history (service, ts);
     CREATE INDEX IF NOT EXISTS idx_app_ts ON app_history (ts);
+    -- NOTE: idx_app_service_container_ts is created in _migrate() for the
+    -- same reason as cache_history's container index (column may be added
+    -- in-place on upgrade from <0.8.0).
 
     CREATE TABLE IF NOT EXISTS neo4j_history (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1286,6 +1358,15 @@ class History:
         self._conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_cache_service_container_ts "
             "ON cache_history (service, container, ts)"
+        )
+        # Same pattern for app_history (added in v0.8.0)
+        app_cols = {r[1] for r in self._conn.execute("PRAGMA table_info(app_history)")}
+        if app_cols and "container" not in app_cols:
+            self._conn.execute("ALTER TABLE app_history ADD COLUMN container TEXT")
+            log.info("history: added container column to app_history")
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_app_service_container_ts "
+            "ON app_history (service, container, ts)"
         )
 
     def record(self, results: Iterable[CheckResult]) -> None:
@@ -1637,6 +1718,7 @@ class History:
             (
                 r.name,
                 r.shape,
+                r.container,
                 int(time.time()),
                 r.checked_at,
                 1 if r.ok else 0,
@@ -1662,12 +1744,12 @@ class History:
             cur.execute("BEGIN")
             cur.executemany(
                 "INSERT INTO app_history "
-                "(service, shape, ts, checked_at, ok, error, "
+                "(service, shape, container, ts, checked_at, ok, error, "
                 " q_status, q_workers, q_max_concurrent, q_max_queue_depth, "
                 " q_active, q_waiting, q_total_served, q_cache_size, q_cache_hits, "
                 " q_coalesced_total, q_coalesced_in_flight, q_scanner_blocked, "
                 " q_solr_cache_enabled) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 rows,
             )
             cur.execute("COMMIT")
@@ -1678,14 +1760,24 @@ class History:
     def app_series(
         self, service: str, since_seconds: int, max_points: int = 120
     ) -> list[dict[str, Any]]:
+        """Down-sampled, oldest-first. Sums across containers per ts so the
+        cluster view of active / waiting / total_served is what's plotted.
+        """
         if self._conn is None:
             return []
         cutoff = int(time.time()) - since_seconds
         try:
             cur = self._conn.execute(
-                "SELECT ts, ok, q_active, q_waiting, q_total_served, q_cache_hits, "
-                "q_coalesced_in_flight, q_coalesced_total "
-                "FROM app_history WHERE service = ? AND ts >= ? ORDER BY ts ASC",
+                "SELECT ts, "
+                " MAX(ok) AS any_ok, "
+                " SUM(q_active) AS q_active, "
+                " SUM(q_waiting) AS q_waiting, "
+                " SUM(q_total_served) AS q_total_served, "
+                " SUM(q_cache_hits) AS q_cache_hits, "
+                " SUM(q_coalesced_in_flight) AS q_coalesced_in_flight, "
+                " SUM(q_coalesced_total) AS q_coalesced_total "
+                "FROM app_history WHERE service = ? AND ts >= ? "
+                "GROUP BY ts ORDER BY ts ASC",
                 (service, cutoff),
             )
             rows = cur.fetchall()
@@ -1698,7 +1790,7 @@ class History:
         return [
             {
                 "ts": ts,
-                "ok": bool(ok),
+                "ok": bool(ok) if ok is not None else False,
                 "active": qa,
                 "waiting": qw,
                 "total_served": ts_count,
@@ -1762,7 +1854,7 @@ class State:
         self.neo4j_services = neo4j_services or []
         self.results: dict[str, CheckResult] = {}
         self.cache_results: dict[str, list[CacheCheck]] = {}
-        self.app_results: dict[str, AppCheck] = {}
+        self.app_results: dict[str, list[AppCheck]] = {}
         self.neo4j_results: dict[str, Neo4jCheck] = {}
         self.cluster_result: RancherClusterResult | None = None
         self.last_run: str | None = None
@@ -1821,8 +1913,9 @@ class State:
                 self.cache_results = {}
                 for cr in cache_results:
                     self.cache_results.setdefault(cr.name, []).append(cr)
+                self.app_results = {}
                 for ar in app_results:
-                    self.app_results[ar.name] = ar
+                    self.app_results.setdefault(ar.name, []).append(ar)
                 for nr in neo4j_results:
                     self.neo4j_results[nr.name] = nr
                 self.cluster_result = cluster_result
@@ -2002,34 +2095,64 @@ def _neo4j_card(state: State, svc: Neo4jServiceSpec) -> dict[str, Any]:
 
 
 def _app_card(state: State, svc: AppServiceSpec) -> dict[str, Any]:
-    latest = state.app_results.get(svc.name)
+    containers = state.app_results.get(svc.name, [])
+    ok_containers = [c for c in containers if c.ok]
+
+    def _sum(attr: str) -> int | None:
+        vals = [getattr(c, attr) for c in ok_containers if getattr(c, attr) is not None]
+        return sum(vals) if vals else None
+
+    # For per-container max-config fields (workers / max_concurrent /
+    # max_queue_depth) the sum across the cluster is the meaningful figure.
+    summary = {
+        "container_count": len(containers),
+        "ok_count": len(ok_containers),
+        "active": _sum("q_active"),
+        "waiting": _sum("q_waiting"),
+        "total_served": _sum("q_total_served"),
+        "cache_hits": _sum("q_cache_hits"),
+        "cache_size": _sum("q_cache_size"),
+        "coalesced_total": _sum("q_coalesced_total"),
+        "coalesced_in_flight": _sum("q_coalesced_in_flight"),
+        "scanner_blocked": _sum("q_scanner_blocked"),
+        "workers_total": _sum("q_workers"),
+        "max_concurrent_total": _sum("q_max_concurrent"),
+        "max_queue_depth_total": _sum("q_max_queue_depth"),
+    }
+    if summary["max_concurrent_total"] and summary["active"] is not None:
+        summary["concurrency_pct"] = (
+            100.0 * summary["active"] / summary["max_concurrent_total"]
+        )
+    else:
+        summary["concurrency_pct"] = None
+    if summary["max_queue_depth_total"] and summary["waiting"] is not None:
+        summary["queue_pct"] = (
+            100.0 * summary["waiting"] / summary["max_queue_depth_total"]
+        )
+    else:
+        summary["queue_pct"] = None
+
     series = state.history.app_series(
         svc.name, _cache_chart_window_seconds(), max_points=120
     )
     active_pts = [(r["ts"], r["active"]) for r in series if r["active"] is not None]
     waiting_pts = [(r["ts"], r["waiting"]) for r in series if r["waiting"] is not None]
     rate_pts: list[tuple[int, int]] = []
-    cache_rate_pts: list[tuple[int, int]] = []
     if len(series) >= 2:
         prev_served = None
-        prev_hits = None
         for r in series:
             ts_ = r["total_served"]
-            ch = r["cache_hits"]
             if prev_served is not None and ts_ is not None:
                 rate_pts.append((r["ts"], max(0, ts_ - prev_served)))
-            if prev_hits is not None and ch is not None:
-                cache_rate_pts.append((r["ts"], max(0, ch - prev_hits)))
             prev_served = ts_
-            prev_hits = ch
     return {
         "spec": svc,
-        "latest": latest,
+        "containers": containers,
+        "summary": summary,
         "series": series,
         "active_pts": active_pts,
         "waiting_pts": waiting_pts,
         "rate_pts": rate_pts,
-        "cache_rate_pts": cache_rate_pts,
     }
 
 
@@ -2308,35 +2431,64 @@ async def api_neo4j_history(
 
 @app.get("/api/app")
 async def api_app(request: Request) -> JSONResponse:
-    """Latest snapshot per app service."""
+    """Latest snapshot per app service. When a service has multiple containers
+    (Rancher enumeration), `containers` lists each one and `summary` is the
+    cluster-wide aggregate.
+    """
     state: State = request.app.state.state
     out = []
     for svc in state.app_services:
-        l = state.app_results.get(svc.name)
+        containers = state.app_results.get(svc.name, [])
+        per_container = [
+            {
+                "container": c.container,
+                "ok": c.ok,
+                "checked_at": c.checked_at,
+                "error": c.error,
+                "status_url": c.status_url,
+                "q_status": c.q_status,
+                "workers": c.q_workers,
+                "max_concurrent": c.q_max_concurrent,
+                "max_queue_depth": c.q_max_queue_depth,
+                "active": c.q_active,
+                "waiting": c.q_waiting,
+                "total_served": c.q_total_served,
+                "cache_size": c.q_cache_size,
+                "cache_hits": c.q_cache_hits,
+                "coalesced_total": c.q_coalesced_total,
+                "coalesced_in_flight": c.q_coalesced_in_flight,
+                "scanner_probes_blocked": c.q_scanner_blocked,
+                "solr_cache_enabled": c.q_solr_cache_enabled,
+                "queue_pct": c.queue_pct,
+                "concurrency_pct": c.concurrency_pct,
+            }
+            for c in containers
+        ]
+        ok = [c for c in containers if c.ok]
+        def _s(attr: str) -> int | None:
+            vals = [getattr(c, attr) for c in ok if getattr(c, attr) is not None]
+            return sum(vals) if vals else None
+        summary = {
+            "container_count": len(containers),
+            "ok_count": len(ok),
+            "active": _s("q_active"),
+            "waiting": _s("q_waiting"),
+            "total_served": _s("q_total_served"),
+            "cache_hits": _s("q_cache_hits"),
+            "cache_size": _s("q_cache_size"),
+            "workers_total": _s("q_workers"),
+            "max_concurrent_total": _s("q_max_concurrent"),
+            "max_queue_depth_total": _s("q_max_queue_depth"),
+        }
         out.append(
             {
                 "service": svc.name,
                 "shape": svc.shape,
                 "status_url": svc.status_url,
                 "fronts": svc.fronts,
-                "ok": l.ok if l else None,
-                "checked_at": l.checked_at if l else None,
-                "error": l.error if l else None,
-                "q_status": l.q_status if l else None,
-                "workers": l.q_workers if l else None,
-                "max_concurrent": l.q_max_concurrent if l else None,
-                "max_queue_depth": l.q_max_queue_depth if l else None,
-                "active": l.q_active if l else None,
-                "waiting": l.q_waiting if l else None,
-                "total_served": l.q_total_served if l else None,
-                "cache_size": l.q_cache_size if l else None,
-                "cache_hits": l.q_cache_hits if l else None,
-                "coalesced_total": l.q_coalesced_total if l else None,
-                "coalesced_in_flight": l.q_coalesced_in_flight if l else None,
-                "scanner_probes_blocked": l.q_scanner_blocked if l else None,
-                "solr_cache_enabled": l.q_solr_cache_enabled if l else None,
-                "queue_pct": l.queue_pct if l else None,
-                "concurrency_pct": l.concurrency_pct if l else None,
+                "rancher_enabled": svc.rancher is not None,
+                "summary": summary,
+                "containers": per_container,
             }
         )
     return JSONResponse({"apps": out})

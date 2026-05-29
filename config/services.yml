@@ -218,3 +218,11 @@ app_services:
     status_url: https://vfbquery.virtualflybrain.org/status
     shape: vfbquery
     fronts: VFBquery service
+    # Same enumeration pattern as cache_services: the LB-fronted /status only
+    # shows one random backend's view. Enumerate via the Rancher v1 API and
+    # probe each container's /status directly (port 8080 per the vfbquery
+    # image). Requires RANCHER_API_KEY / RANCHER_API_SECRET on the container.
+    rancher:
+      service_url: https://herd.virtualflybrain.org/v2-beta/projects/1a5/services/1s345
+      container_port: 8080
+      container_path: /status

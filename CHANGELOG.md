@@ -2,6 +2,22 @@
 
 All notable changes to vfb-status are recorded here. The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.0] — 2026-05-29
+
+Per-container probing for `app_services` (specifically VFBquery, which now runs `scale: 4`). Same Rancher v1 API pattern we built for `cache_services` in v0.6.0.
+
+### Added
+
+- Optional `rancher:` block on `app_services` entries. When set, every probe enumerates the service's running containers via the Rancher v1 API and probes each one's `/status` directly at its `primaryIpAddress:container_port`. Falls back to the LB-fronted single probe if the API isn't configured.
+- New `container` column on `app_history` (auto-migrated on existing DBs). NULL for LB rows, populated with the Rancher instance name for per-container rows.
+- New `idx_app_service_container_ts` index, created in `_migrate()` (same forward-compatible pattern as cache_history).
+- VFBquery entry in `config/services.yml` now has a `rancher:` block pointing at service id `1s345`, container port `8080`. Currently scale 4.
+
+### Changed
+
+- App card now shows: cluster-summed stats at the top (active, waiting, served, hit rate, etc.), a per-container breakdown table, and three cluster sparklines (active, waiting, Δ total_served).
+- `/api/app` response now returns `summary` (cluster aggregate) and `containers[]` (per-container detail). Existing clients reading the old top-level fields will need to switch to `summary` or per-container rows.
+
 ## [0.7.3] — 2026-05-29
 
 Fix the every-request 500 storm caused by `sqlite3.OperationalError: disk I/O error`. Root cause: Rancher's default "start-then-stop" rolling upgrade ran two vfb-status containers concurrently against the same SQLite file on the mounted volume, corrupting the WAL.
@@ -169,6 +185,7 @@ Initial release. Self-contained Docker uptime tracker for public-facing Virtual 
 - Four subdomains (`nas0`, `iip3d`, `nblast`, `abd1-5.catmaid`) ship with `verify_tls: false` because the production cert SAN doesn't cover them. The servers are up; the cert provisioning is a separate problem.
 - Kubernetes nodes are intentionally not handled here — separate checks planned for a later release.
 
+[0.8.0]: https://github.com/VirtualFlyBrain/vfb-status/releases/tag/v0.8.0
 [0.7.3]: https://github.com/VirtualFlyBrain/vfb-status/releases/tag/v0.7.3
 [0.7.2]: https://github.com/VirtualFlyBrain/vfb-status/releases/tag/v0.7.2
 [0.7.1]: https://github.com/VirtualFlyBrain/vfb-status/releases/tag/v0.7.1
