@@ -2,6 +2,24 @@
 
 All notable changes to vfb-status are recorded here. The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.3] — 2026-05-29
+
+Fix the every-request 500 storm caused by `sqlite3.OperationalError: disk I/O error`. Root cause: Rancher's default "start-then-stop" rolling upgrade ran two vfb-status containers concurrently against the same SQLite file on the mounted volume, corrupting the WAL.
+
+### Changed
+
+- Default `journal_mode` is now **DELETE** instead of WAL. SQLite docs explicitly require DELETE on NFS, and Rancher persistent volumes are commonly NFS-backed. Set `HISTORY_JOURNAL_MODE=WAL` to opt back in on local-SSD deploys.
+- Added `PRAGMA busy_timeout=2000` so transient contention waits 2 s instead of erroring immediately.
+
+### Added
+
+- Exclusive `fcntl.flock` on a sentinel file (`<HISTORY_DB>.lock`) at startup. If a second vfb-status instance starts against the same volume (botched upgrade, accidental scale > 1), it logs a clear error and refuses to write — better to lose history briefly than corrupt the DB. On filesystems that don't support `flock` the app warns and proceeds.
+
+### Fixed
+
+- Every History read method (`uptime_pct`, `buckets`, `cache_series`, `cache_latest`, `app_series`, `neo4j_series`, `recent`, `services`) now catches `sqlite3.Error` and returns safe defaults (`(None, 0)`, `[]`, `["unknown"] * n`, etc.) so a DB-layer issue degrades the page gracefully instead of producing HTTP 500.
+- New `_safe_service_row()` wrapper around `_service_row()` in the index route catches any remaining exception, logs it, and renders an "unknown" placeholder with the error attached — the page renders even if the history layer is completely broken.
+
 ## [0.7.2] — 2026-05-29
 
 ### Changed
@@ -151,6 +169,7 @@ Initial release. Self-contained Docker uptime tracker for public-facing Virtual 
 - Four subdomains (`nas0`, `iip3d`, `nblast`, `abd1-5.catmaid`) ship with `verify_tls: false` because the production cert SAN doesn't cover them. The servers are up; the cert provisioning is a separate problem.
 - Kubernetes nodes are intentionally not handled here — separate checks planned for a later release.
 
+[0.7.3]: https://github.com/VirtualFlyBrain/vfb-status/releases/tag/v0.7.3
 [0.7.2]: https://github.com/VirtualFlyBrain/vfb-status/releases/tag/v0.7.2
 [0.7.1]: https://github.com/VirtualFlyBrain/vfb-status/releases/tag/v0.7.1
 [0.7.0]: https://github.com/VirtualFlyBrain/vfb-status/releases/tag/v0.7.0

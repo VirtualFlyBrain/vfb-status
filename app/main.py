@@ -20,6 +20,7 @@ Design notes
 from __future__ import annotations
 
 import asyncio
+import fcntl
 import json
 import logging
 import os
@@ -1200,21 +1201,58 @@ class History:
     def __init__(self, path: Path | None) -> None:
         self.path = path
         self._conn: sqlite3.Connection | None = None
+        self._lock_fd: int | None = None
         if path is None:
             log.warning("history is disabled (HISTORY_DB explicitly empty)")
             return
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
+            # Exclusive flock on a sentinel file so a second container running
+            # against the same volume (e.g. during a botched Rancher rolling
+            # upgrade) refuses to write rather than corrupting the SQLite DB.
+            # Lock survives only as long as this process holds the fd open.
+            lock_path = path.with_suffix(path.suffix + ".lock")
+            try:
+                self._lock_fd = os.open(
+                    str(lock_path), os.O_CREAT | os.O_RDWR, 0o644
+                )
+                fcntl.flock(self._lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                log.error(
+                    "history disabled: another vfb-status instance is already "
+                    "writing to %s. Refusing to corrupt the database. "
+                    "Set scale=1 and Rancher upgrade strategy to "
+                    "Stop-then-Start.", path,
+                )
+                if self._lock_fd is not None:
+                    os.close(self._lock_fd)
+                    self._lock_fd = None
+                return
+            except OSError as exc:
+                # Filesystem doesn't support flock (some NFS configs). Log
+                # and continue without the guard — better to risk corruption
+                # than crash.
+                log.warning("history lock unavailable (%s); proceeding", exc)
             self._conn = sqlite3.connect(
                 str(path),
                 check_same_thread=False,
                 isolation_level=None,  # autocommit; we handle transactions
             )
-            self._conn.execute("PRAGMA journal_mode=WAL")
+            # journal_mode is configurable so we can pick NFS-safe defaults.
+            # WAL is faster but breaks on NFS (sqlite docs: "if a database is
+            # accessed via NFS, then it must use journal_mode=DELETE"). The
+            # default is DELETE — set HISTORY_JOURNAL_MODE=WAL to opt back in
+            # when the volume is local SSD.
+            journal = os.environ.get("HISTORY_JOURNAL_MODE", "DELETE").upper()
+            try:
+                self._conn.execute(f"PRAGMA journal_mode={journal}")
+            except sqlite3.Error as exc:
+                log.warning("failed to set journal_mode=%s: %s", journal, exc)
             self._conn.execute("PRAGMA synchronous=NORMAL")
+            self._conn.execute("PRAGMA busy_timeout=2000")
             self._conn.executescript(self.SCHEMA)
             self._migrate()
-            log.info("history db at %s (writable)", path)
+            log.info("history db at %s (writable, journal_mode=%s)", path, journal)
         except OSError as exc:
             # Most likely /data isn't mounted writable. Don't crash the app —
             # just disable history and surface the reason loudly on the page.
@@ -1381,12 +1419,16 @@ class History:
         if self._conn is None:
             return []
         cutoff = int(time.time()) - since_seconds
-        cur = self._conn.execute(
-            "SELECT ts, ok, db_status, node_count, latency_ms "
-            "FROM neo4j_history WHERE service = ? AND ts >= ? ORDER BY ts ASC",
-            (service, cutoff),
-        )
-        rows = cur.fetchall()
+        try:
+            cur = self._conn.execute(
+                "SELECT ts, ok, db_status, node_count, latency_ms "
+                "FROM neo4j_history WHERE service = ? AND ts >= ? ORDER BY ts ASC",
+                (service, cutoff),
+            )
+            rows = cur.fetchall()
+        except sqlite3.Error as exc:
+            log.warning("neo4j_series read failed for %s: %s", service, exc)
+            return []
         if not rows:
             return []
         step = max(1, len(rows) // max_points)
@@ -1447,21 +1489,25 @@ class History:
         if self._conn is None:
             return []
         cutoff = int(time.time()) - since_seconds
-        cur = self._conn.execute(
-            "SELECT ts, "
-            " MAX(ok) AS any_ok, "
-            " SUM(cache_total) AS cache_total, "
-            " SUM(cache_hit) AS cache_hit, "
-            " SUM(cache_miss) AS cache_miss, "
-            " SUM(conn_active) AS conn_active, "
-            " SUM(conn_reading) AS conn_reading, "
-            " SUM(conn_writing) AS conn_writing, "
-            " SUM(conn_waiting) AS conn_waiting "
-            "FROM cache_history WHERE service = ? AND ts >= ? "
-            "GROUP BY ts ORDER BY ts ASC",
-            (service, cutoff),
-        )
-        rows = cur.fetchall()
+        try:
+            cur = self._conn.execute(
+                "SELECT ts, "
+                " MAX(ok) AS any_ok, "
+                " SUM(cache_total) AS cache_total, "
+                " SUM(cache_hit) AS cache_hit, "
+                " SUM(cache_miss) AS cache_miss, "
+                " SUM(conn_active) AS conn_active, "
+                " SUM(conn_reading) AS conn_reading, "
+                " SUM(conn_writing) AS conn_writing, "
+                " SUM(conn_waiting) AS conn_waiting "
+                "FROM cache_history WHERE service = ? AND ts >= ? "
+                "GROUP BY ts ORDER BY ts ASC",
+                (service, cutoff),
+            )
+            rows = cur.fetchall()
+        except sqlite3.Error as exc:
+            log.warning("cache_series read failed for %s: %s", service, exc)
+            return []
         if not rows:
             return []
         step = max(1, len(rows) // max_points)
@@ -1488,14 +1534,18 @@ class History:
         """
         if self._conn is None:
             return None
-        cur = self._conn.execute(
-            "SELECT ts, checked_at, ok, nginx_healthy, upstream_healthy, "
-            "upstream_host, upstream_port, cache_total, cache_hit, cache_miss, "
-            "conn_active, conn_reading, conn_writing, conn_waiting, error "
-            "FROM cache_history WHERE service = ? ORDER BY ts DESC LIMIT 1",
-            (service,),
-        )
-        row = cur.fetchone()
+        try:
+            cur = self._conn.execute(
+                "SELECT ts, checked_at, ok, nginx_healthy, upstream_healthy, "
+                "upstream_host, upstream_port, cache_total, cache_hit, cache_miss, "
+                "conn_active, conn_reading, conn_writing, conn_waiting, error "
+                "FROM cache_history WHERE service = ? ORDER BY ts DESC LIMIT 1",
+                (service,),
+            )
+            row = cur.fetchone()
+        except sqlite3.Error as exc:
+            log.warning("cache_latest read failed for %s: %s", service, exc)
+            return None
         if not row:
             return None
         (ts, checked_at, ok, nh, uh, uhost, uport, ct, ch, cm, ca, cr, cw, cwt, err) = row
@@ -1522,16 +1572,20 @@ class History:
         """Return (uptime_pct, total_known_rows) over the last `since_seconds`.
 
         `unknown` rows are excluded from the denominator. Returns (None, 0) when
-        we have no data in the window.
+        we have no data in the window or when the DB read errors.
         """
         if self._conn is None:
             return None, 0
         cutoff = int(time.time()) - since_seconds
-        cur = self._conn.execute(
-            "SELECT status, COUNT(*) FROM history WHERE service = ? AND ts >= ? GROUP BY status",
-            (service, cutoff),
-        )
-        counts = {row[0]: row[1] for row in cur.fetchall()}
+        try:
+            cur = self._conn.execute(
+                "SELECT status, COUNT(*) FROM history WHERE service = ? AND ts >= ? GROUP BY status",
+                (service, cutoff),
+            )
+            counts = {row[0]: row[1] for row in cur.fetchall()}
+        except sqlite3.Error as exc:
+            log.warning("uptime_pct read failed for %s: %s", service, exc)
+            return None, 0
         up = counts.get("up", 0)
         down = counts.get("down", 0)
         known = up + down
@@ -1551,13 +1605,18 @@ class History:
             return ["unknown"] * n_buckets
         now = int(time.time())
         start = now - n_buckets * bucket_seconds
-        cur = self._conn.execute(
-            "SELECT ts, status FROM history "
-            "WHERE service = ? AND ts >= ? ORDER BY ts ASC",
-            (service, start),
-        )
+        try:
+            cur = self._conn.execute(
+                "SELECT ts, status FROM history "
+                "WHERE service = ? AND ts >= ? ORDER BY ts ASC",
+                (service, start),
+            )
+            rows = cur.fetchall()
+        except sqlite3.Error as exc:
+            log.warning("buckets read failed for %s: %s", service, exc)
+            return ["unknown"] * n_buckets
         out = ["unknown"] * n_buckets
-        for ts, status in cur.fetchall():
+        for ts, status in rows:
             idx = (ts - start) // bucket_seconds
             if idx < 0 or idx >= n_buckets:
                 continue
@@ -1622,13 +1681,17 @@ class History:
         if self._conn is None:
             return []
         cutoff = int(time.time()) - since_seconds
-        cur = self._conn.execute(
-            "SELECT ts, ok, q_active, q_waiting, q_total_served, q_cache_hits, "
-            "q_coalesced_in_flight, q_coalesced_total "
-            "FROM app_history WHERE service = ? AND ts >= ? ORDER BY ts ASC",
-            (service, cutoff),
-        )
-        rows = cur.fetchall()
+        try:
+            cur = self._conn.execute(
+                "SELECT ts, ok, q_active, q_waiting, q_total_served, q_cache_hits, "
+                "q_coalesced_in_flight, q_coalesced_total "
+                "FROM app_history WHERE service = ? AND ts >= ? ORDER BY ts ASC",
+                (service, cutoff),
+            )
+            rows = cur.fetchall()
+        except sqlite3.Error as exc:
+            log.warning("app_series read failed for %s: %s", service, exc)
+            return []
         if not rows:
             return []
         step = max(1, len(rows) // max_points)
@@ -1649,11 +1712,16 @@ class History:
     def recent(self, service: str, limit: int = 200) -> list[dict[str, Any]]:
         if self._conn is None:
             return []
-        cur = self._conn.execute(
-            "SELECT checked_at, status, http_status, latency_ms, error "
-            "FROM history WHERE service = ? ORDER BY ts DESC LIMIT ?",
-            (service, limit),
-        )
+        try:
+            cur = self._conn.execute(
+                "SELECT checked_at, status, http_status, latency_ms, error "
+                "FROM history WHERE service = ? ORDER BY ts DESC LIMIT ?",
+                (service, limit),
+            )
+            rows = cur.fetchall()
+        except sqlite3.Error as exc:
+            log.warning("recent read failed for %s: %s", service, exc)
+            return []
         return [
             {
                 "checked_at": ca,
@@ -1662,14 +1730,18 @@ class History:
                 "latency_ms": lm,
                 "error": err,
             }
-            for ca, st, hs, lm, err in cur.fetchall()
+            for ca, st, hs, lm, err in rows
         ]
 
     def services(self) -> list[str]:
         if self._conn is None:
             return []
-        cur = self._conn.execute("SELECT DISTINCT service FROM history ORDER BY service")
-        return [row[0] for row in cur.fetchall()]
+        try:
+            cur = self._conn.execute("SELECT DISTINCT service FROM history ORDER BY service")
+            return [row[0] for row in cur.fetchall()]
+        except sqlite3.Error as exc:
+            log.warning("services list read failed: %s", exc)
+            return []
 
 
 # ----- app state --------------------------------------------------------------
@@ -1961,12 +2033,34 @@ def _app_card(state: State, svc: AppServiceSpec) -> dict[str, Any]:
     }
 
 
+def _safe_service_row(state: State, svc: ServiceSpec) -> dict[str, Any]:
+    """Wrapper that guarantees a renderable dict even if history reads throw.
+
+    Lets the page render whatever state we do have when the SQLite layer is
+    broken (e.g. NFS-backed DB with WAL corruption), instead of returning HTTP
+    500 from every request.
+    """
+    try:
+        return _service_row(state, svc)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("_service_row failed for %s: %s", svc.name, exc)
+        return {
+            "result": state.results.get(svc.name) or CheckResult(
+                name=svc.name, group=svc.group, url=svc.url, status="unknown",
+                error=f"history read error: {exc}",
+            ),
+            "buckets": ["unknown"] * HISTORY_BUCKETS,
+            "uptime_24h": None, "uptime_7d": None, "uptime_30d": None,
+            "n_24h": 0, "n_7d": 0, "n_30d": 0,
+        }
+
+
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request) -> HTMLResponse:
     state: State = request.app.state.state
     grouped: dict[str, list[dict[str, Any]]] = {}
     for svc in state.services:
-        grouped.setdefault(svc.group, []).append(_service_row(state, svc))
+        grouped.setdefault(svc.group, []).append(_safe_service_row(state, svc))
     total = len(state.services)
     up = sum(1 for r in state.results.values() if r.status == "up")
     down = sum(1 for r in state.results.values() if r.status == "down")
