@@ -406,6 +406,13 @@
               <header>
                 <div>
                   <a class="cache-name" href="{{ spec.status_url }}" rel="noopener noreferrer" target="_blank">{{ spec.name }}</a>
+                  {% if s.version_display %}
+                    {% if s.version_mixed %}
+                      <span class="badge badge-down" title="containers reported different versions: {{ s.versions|join(', ') }}">v{{ s.version_display }} ⚠ mixed</span>
+                    {% else %}
+                      <span class="badge badge-info" title="all containers running this version">v{{ s.version_display }}</span>
+                    {% endif %}
+                  {% endif %}
                   <div class="cache-fronts">
                     {% if spec.fronts %}{{ spec.fronts }} · {% endif %}
                     shape={{ spec.shape }} ·

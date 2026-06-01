@@ -277,6 +277,7 @@ class AppCheck:
 
     # vfbquery shape
     q_status: str | None = None
+    q_version: str | None = None
     q_workers: int | None = None
     q_max_concurrent: int | None = None
     q_max_queue_depth: int | None = None
@@ -747,6 +748,7 @@ def _parse_app_json(
             name=svc.name, status_url=url, shape=svc.shape,
             ok=True, checked_at=started, container=container,
             q_status=data.get("status"),
+            q_version=(str(data.get("version")) if data.get("version") is not None else None),
             q_workers=_to_int(data.get("workers")),
             q_max_concurrent=_to_int(data.get("max_concurrent")),
             q_max_queue_depth=_to_int(data.get("max_queue_depth")),
@@ -1204,6 +1206,7 @@ class History:
         ok INTEGER NOT NULL,
         error TEXT,
         q_status TEXT,
+        q_version TEXT,
         q_workers INTEGER,
         q_max_concurrent INTEGER,
         q_max_queue_depth INTEGER,
@@ -1364,6 +1367,9 @@ class History:
         if app_cols and "container" not in app_cols:
             self._conn.execute("ALTER TABLE app_history ADD COLUMN container TEXT")
             log.info("history: added container column to app_history")
+        if app_cols and "q_version" not in app_cols:
+            self._conn.execute("ALTER TABLE app_history ADD COLUMN q_version TEXT")
+            log.info("history: added q_version column to app_history")
         self._conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_app_service_container_ts "
             "ON app_history (service, container, ts)"
@@ -1724,6 +1730,7 @@ class History:
                 1 if r.ok else 0,
                 r.error,
                 r.q_status,
+                r.q_version,
                 r.q_workers,
                 r.q_max_concurrent,
                 r.q_max_queue_depth,
@@ -1745,11 +1752,11 @@ class History:
             cur.executemany(
                 "INSERT INTO app_history "
                 "(service, shape, container, ts, checked_at, ok, error, "
-                " q_status, q_workers, q_max_concurrent, q_max_queue_depth, "
+                " q_status, q_version, q_workers, q_max_concurrent, q_max_queue_depth, "
                 " q_active, q_waiting, q_total_served, q_cache_size, q_cache_hits, "
                 " q_coalesced_total, q_coalesced_in_flight, q_scanner_blocked, "
                 " q_solr_cache_enabled) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 rows,
             )
             cur.execute("COMMIT")
@@ -2104,9 +2111,15 @@ def _app_card(state: State, svc: AppServiceSpec) -> dict[str, Any]:
 
     # For per-container max-config fields (workers / max_concurrent /
     # max_queue_depth) the sum across the cluster is the meaningful figure.
+    versions = sorted({c.q_version for c in ok_containers if c.q_version})
     summary = {
         "container_count": len(containers),
         "ok_count": len(ok_containers),
+        "versions": versions,
+        "version_mixed": len(versions) > 1,
+        "version_display": versions[0] if len(versions) == 1 else (
+            " / ".join(versions) if versions else None
+        ),
         "active": _sum("q_active"),
         "waiting": _sum("q_waiting"),
         "total_served": _sum("q_total_served"),
@@ -2484,6 +2497,7 @@ async def api_app(request: Request) -> JSONResponse:
                 "error": c.error,
                 "status_url": c.status_url,
                 "q_status": c.q_status,
+                "version": c.q_version,
                 "workers": c.q_workers,
                 "max_concurrent": c.q_max_concurrent,
                 "max_queue_depth": c.q_max_queue_depth,
@@ -2505,9 +2519,15 @@ async def api_app(request: Request) -> JSONResponse:
         def _s(attr: str) -> int | None:
             vals = [getattr(c, attr) for c in ok if getattr(c, attr) is not None]
             return sum(vals) if vals else None
+        versions = sorted({c.q_version for c in ok if c.q_version})
         summary = {
             "container_count": len(containers),
             "ok_count": len(ok),
+            "versions": versions,
+            "version_mixed": len(versions) > 1,
+            "version_display": versions[0] if len(versions) == 1 else (
+                " / ".join(versions) if versions else None
+            ),
             "active": _s("q_active"),
             "waiting": _s("q_waiting"),
             "total_served": _s("q_total_served"),

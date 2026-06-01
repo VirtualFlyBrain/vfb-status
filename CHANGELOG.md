@@ -2,6 +2,14 @@
 
 All notable changes to vfb-status are recorded here. The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.2] — 2026-06-01
+
+### Added
+
+- VFBquery `/status` `version` field (added upstream in v1.12.7) is now parsed and shown once in the app card header — a single `vX.Y.Z` chip when all containers report the same version. If they disagree (mid-rolling-deploy or a stuck container) the chip turns red and reads `vA / vB ⚠ mixed`, with a tooltip listing every distinct version seen across `ok` containers. Cluster-version skew is a real signal worth surfacing immediately.
+- New `q_version` column on `app_history` (auto-migrated on existing DBs).
+- `/api/app` returns `version` per container plus aggregate `versions[]`, `version_mixed`, `version_display` in the service summary.
+
 ## [0.8.1] — 2026-05-29
 
 Rancher API is now the authoritative source for rancher_servers row status. The `:5050` cowcheck probe is kept (for history + the latency column) but no longer drives the up/down pill on its own.
@@ -195,6 +203,7 @@ Initial release. Self-contained Docker uptime tracker for public-facing Virtual 
 - Four subdomains (`nas0`, `iip3d`, `nblast`, `abd1-5.catmaid`) ship with `verify_tls: false` because the production cert SAN doesn't cover them. The servers are up; the cert provisioning is a separate problem.
 - Kubernetes nodes are intentionally not handled here — separate checks planned for a later release.
 
+[0.8.2]: https://github.com/VirtualFlyBrain/vfb-status/releases/tag/v0.8.2
 [0.8.1]: https://github.com/VirtualFlyBrain/vfb-status/releases/tag/v0.8.1
 [0.8.0]: https://github.com/VirtualFlyBrain/vfb-status/releases/tag/v0.8.0
 [0.7.3]: https://github.com/VirtualFlyBrain/vfb-status/releases/tag/v0.7.3
