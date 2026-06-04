@@ -350,42 +350,89 @@
         <div class="cache-grid">
           {% for c in neo4j_cards %}
             {% set spec = c.spec %}
-            {% set l = c.latest %}
+            {% set s = c.summary %}
+            {% set containers = c.containers %}
+            {% set first_err = containers|selectattr('error')|map(attribute='error')|first %}
+            {% set is_all_auth_err = containers|length > 0 and (containers|selectattr('error')|map(attribute='error')|select('search', '(401|Unauthorized|auth)')|list|length) == (containers|length) %}
             <article class="cache-card">
               <header>
                 <div>
                   <a class="cache-name" href="{{ spec.base_url }}/browser/" rel="noopener noreferrer" target="_blank">{{ spec.name }}</a>
-                  <div class="cache-fronts">{% if spec.fronts %}{{ spec.fronts }} · {% endif %}db={{ spec.db }} · min_nodes={{ "{:,}".format(spec.min_nodes) }}</div>
+                  <div class="cache-fronts">
+                    {% if spec.fronts %}{{ spec.fronts }} · {% endif %}
+                    db={{ spec.db }} · min_nodes={{ "{:,}".format(spec.min_nodes) }} ·
+                    {{ s.container_count }} container{{ '' if s.container_count == 1 else 's' }}
+                    ({{ s.ok_count }} ok)
+                  </div>
                 </div>
-                {% if l and l.ok %}
+                {% if s.container_count > 0 and s.ok_count == s.container_count %}
                   <span class="pill up">online</span>
-                {% elif l and l.error and ('401' in l.error or 'Unauthorized' in l.error or 'auth' in l.error|lower) %}
-                  <span class="pill auth" title="{{ l.error }} — check the credentials (`password:` in services.yml or NEO4J_PASSWORD env)">auth?</span>
-                {% elif l %}
-                  <span class="pill down" title="{{ l.error or 'down' }}">{{ l.db_status or 'down' }}</span>
-                {% else %}
+                {% elif s.container_count == 0 %}
                   <span class="pill unknown">no data</span>
+                {% elif is_all_auth_err %}
+                  <span class="pill auth" title="auth failed — check `password:` or NEO4J_PASSWORD">auth?</span>
+                {% elif s.ok_count > 0 %}
+                  <span class="pill down" title="{{ s.container_count - s.ok_count }} container(s) failing">partial</span>
+                {% else %}
+                  <span class="pill down" title="{{ first_err or 'down' }}">down</span>
                 {% endif %}
               </header>
 
-              {% if l %}
+              {% if s.container_count > 0 %}
                 <dl class="cache-stats">
-                  <div><dt>db status</dt><dd>{{ l.db_status or '—' }}</dd></div>
-                  <div><dt>nodes</dt><dd>{% if l.node_count is not none %}{{ "{:,}".format(l.node_count) }}{% else %}—{% endif %}</dd></div>
+                  <div><dt>db status</dt><dd>{{ s.db_status_display or '—' }}</dd></div>
+                  <div>
+                    <dt>nodes</dt>
+                    <dd>
+                      {% if s.node_count_max is not none %}
+                        {{ "{:,}".format(s.node_count_max) }}
+                        {% if s.node_count_mixed %}<span class="badge badge-down" title="containers reported different counts: {{ s.node_count_min }} .. {{ s.node_count_max }}">⚠ mixed</span>{% endif %}
+                      {% else %}—{% endif %}
+                    </dd>
+                  </div>
                   <div><dt>min nodes</dt><dd>{{ "{:,}".format(spec.min_nodes) }}</dd></div>
-                  <div><dt>latency</dt><dd>{% if l.latency_ms is not none %}{{ l.latency_ms }} ms{% else %}—{% endif %}</dd></div>
+                  <div><dt>avg latency</dt><dd>{% if s.avg_latency_ms is not none %}{{ s.avg_latency_ms }} ms{% else %}—{% endif %}</dd></div>
                 </dl>
-                {% if l.error %}
-                  <div class="cache-err">{{ l.error }}</div>
-                {% endif %}
-                {% if l.db_error %}
-                  <div class="cache-err">Neo4j: {{ l.db_error }}</div>
-                {% endif %}
+              {% endif %}
+
+              {% if containers|length > 1 or (containers|length == 1 and containers[0].container) %}
+                <table class="container-rows">
+                  <thead>
+                    <tr>
+                      <th>container</th>
+                      <th>status</th>
+                      <th>db</th>
+                      <th>nodes</th>
+                      <th>latency</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {% for cc in containers %}
+                      <tr>
+                        <td>{{ cc.container or '(LB)' }}</td>
+                        <td>
+                          {% if cc.ok %}<span class="pill up">ok</span>{% else %}<span class="pill down" title="{{ cc.error or '' }}">err</span>{% endif %}
+                        </td>
+                        <td>{{ cc.db_status or '—' }}</td>
+                        <td>{% if cc.node_count is not none %}{{ "{:,}".format(cc.node_count) }}{% else %}—{% endif %}</td>
+                        <td>{% if cc.latency_ms is not none %}{{ cc.latency_ms }} ms{% else %}—{% endif %}</td>
+                      </tr>
+                      {% if cc.error %}
+                        <tr><td colspan="5" class="svc-err">{{ cc.error }}</td></tr>
+                      {% endif %}
+                    {% endfor %}
+                  </tbody>
+                </table>
+              {% elif containers|length == 1 and containers[0].error %}
+                <div class="cache-err">{{ containers[0].error }}</div>
+              {% endif %}
+
+              {% if c.count_pts %}
                 <div class="cache-chart">
-                  <div class="chart-label">Node count over time</div>
+                  <div class="chart-label">Node count over time (cluster max)</div>
                   {{ sparkline(c.count_pts, width=320, height=42, color="#7d4cd0", fill="rgba(125,76,208,0.15)") }}
                 </div>
-              {% else %}
+              {% elif s.container_count == 0 %}
                 <div class="cache-err">no data yet — first probe pending</div>
               {% endif %}
             </article>

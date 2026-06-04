@@ -200,6 +200,27 @@ neo4j_services:
     min_nodes: 1000000      # PDB docs quote 1.1M+ nodes; alert if below 1M
     timeout: 20
     fronts: Production Database (knowledge graph)
+    # Per-container probing — each Neo4j container gets its own
+    # SHOW DATABASES + count check against http://<ip>:7474. Catches a
+    # single-container divergence (one member offline, stale, or
+    # diverged node count) that the LB-fronted check would mask.
+    rancher:
+      service_url: https://herd.virtualflybrain.org/v2-beta/projects/1a5/services/1s39
+      container_port: 7474
+      container_scheme: http
+  - name: PDB Neo4j — ServerONLY (1s262)
+    base_url: https://pdb.virtualflybrain.org   # used only as fallback
+    db: neo4j
+    user: neo4j
+    password: vfb
+    password_env: NEO4J_PASSWORD
+    min_nodes: 1000000
+    timeout: 20
+    fronts: Server-only PDB replica (no app sidecar)
+    rancher:
+      service_url: https://herd.virtualflybrain.org/v2-beta/projects/1a5/services/1s262
+      container_port: 7474
+      container_scheme: http
   - name: KB Neo4j (kb.virtualflybrain.org)
     base_url: https://kb.virtualflybrain.org
     db: neo4j
@@ -209,6 +230,7 @@ neo4j_services:
     min_nodes: 1
     timeout: 20
     fronts: Knowledge Base (curation graph)
+    # No rancher: block — KB is a single-instance service via LB.
 
 # Application services exposing their own /status JSON (shape: vfbquery, ...).
 # Probed on the same schedule as everything else; metrics stored in

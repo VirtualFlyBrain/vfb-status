@@ -2,6 +2,24 @@
 
 All notable changes to vfb-status are recorded here. The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.0] — 2026-06-04
+
+Per-container probing for `neo4j_services` + new ServerONLY PDB entry.
+
+### Added
+
+- Optional `rancher:` block on `neo4j_services` entries (default `container_port: 7474`, `container_scheme: http`). When set, every probe enumerates the service's running containers via the Rancher v1 API and runs the two-stage `SHOW DATABASES` + `MATCH count` check against each container's own HTTP listener at `http://<primaryIpAddress>:7474`. Falls back to the LB-fronted single probe if the API isn't configured or fails.
+- New `container` column on `neo4j_history` (auto-migrated on existing DBs) + matching `idx_neo4j_service_container_ts` index.
+- PDB Neo4j (`pdb.virtualflybrain.org`, service `1s39`, scale 3) now probes each cluster member individually.
+- New `PDB Neo4j — ServerONLY (1s262)` entry (scale 2) — the server-only replica that doesn't run the app sidecar. Surfaces it alongside the main PDB so any divergence between primary and replica is immediately visible.
+- KB Neo4j stays single-LB (no `rancher:` block) — it's a single-instance service so per-container probing adds no information.
+
+### Changed
+
+- Neo4j card layout now mirrors caches/apps: cluster summary at the top (member count, ok count, max node count + `⚠ mixed` flag if containers report different totals, average latency) plus a per-container breakdown table.
+- `neo4j_series` aggregates across containers per ts via `MAX(node_count)` — picks the leader's count when members disagree so a stale follower doesn't drag the chart down.
+- `/api/neo4j` now returns `summary` + `containers[]` per service (existing top-level fields removed — clients reading the old shape need updating).
+
 ## [0.8.2] — 2026-06-01
 
 ### Added
@@ -203,6 +221,7 @@ Initial release. Self-contained Docker uptime tracker for public-facing Virtual 
 - Four subdomains (`nas0`, `iip3d`, `nblast`, `abd1-5.catmaid`) ship with `verify_tls: false` because the production cert SAN doesn't cover them. The servers are up; the cert provisioning is a separate problem.
 - Kubernetes nodes are intentionally not handled here — separate checks planned for a later release.
 
+[0.9.0]: https://github.com/VirtualFlyBrain/vfb-status/releases/tag/v0.9.0
 [0.8.2]: https://github.com/VirtualFlyBrain/vfb-status/releases/tag/v0.8.2
 [0.8.1]: https://github.com/VirtualFlyBrain/vfb-status/releases/tag/v0.8.1
 [0.8.0]: https://github.com/VirtualFlyBrain/vfb-status/releases/tag/v0.8.0
