@@ -2181,9 +2181,15 @@ def _neo4j_card(state: State, svc: Neo4jServiceSpec) -> dict[str, Any]:
     ok_containers = [c for c in containers if c.ok]
     counts = [c.node_count for c in ok_containers if c.node_count is not None]
     statuses = sorted({c.db_status for c in containers if c.db_status})
+    auth_markers = ("401", "Unauthorized", "auth")
+    def _is_auth_err(err: str | None) -> bool:
+        return bool(err) and any(m in err for m in auth_markers)
+    errored = [c for c in containers if not c.ok]
     summary = {
         "container_count": len(containers),
         "ok_count": len(ok_containers),
+        "is_all_auth_err": bool(errored) and len(errored) == len(containers) and all(_is_auth_err(c.error) for c in errored),
+        "first_err": next((c.error for c in errored if c.error), None),
         "node_count_max": max(counts) if counts else None,
         "node_count_min": min(counts) if counts else None,
         "node_count_mixed": len(set(counts)) > 1,
@@ -2204,12 +2210,14 @@ def _neo4j_card(state: State, svc: Neo4jServiceSpec) -> dict[str, Any]:
         svc.name, _cache_chart_window_seconds(), max_points=120
     )
     count_pts = [(r["ts"], r["node_count"]) for r in series if r["node_count"] is not None]
+    latency_pts = [(r["ts"], r["latency_ms"]) for r in series if r["latency_ms"] is not None]
     return {
         "spec": svc,
         "containers": containers,
         "summary": summary,
         "series": series,
         "count_pts": count_pts,
+        "latency_pts": latency_pts,
     }
 
 
@@ -2352,6 +2360,15 @@ async def index(request: Request) -> HTMLResponse:
     cache_cards = [_cache_card(state, s) for s in state.cache_services]
     app_cards = [_app_card(state, s) for s in state.app_services]
     neo4j_cards = [_neo4j_card(state, s) for s in state.neo4j_services]
+    # Split the groups dict so the template can render the priority group
+    # (Core user-facing) at the very top of the page, then the specialised
+    # sections (Rancher cluster, Neo4j, Apps, Caches), then the remaining
+    # groups in their original order.
+    priority_group = "Core user-facing"
+    priority_groups = {
+        priority_group: grouped[priority_group]
+    } if priority_group in grouped else {}
+    rest_groups = {k: v for k, v in grouped.items() if k != priority_group}
     # Cluster overview helpers
     cluster = state.cluster_result
     cluster_hosts_by_short = (
@@ -2392,6 +2409,8 @@ async def index(request: Request) -> HTMLResponse:
             "cache_cards": cache_cards,
             "app_cards": app_cards,
             "neo4j_cards": neo4j_cards,
+            "priority_groups": priority_groups,
+            "rest_groups": rest_groups,
             "cluster": cluster,
             "cluster_summary": cluster_summary,
             "cluster_hosts_by_short": cluster_hosts_by_short,

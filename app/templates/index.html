@@ -254,6 +254,58 @@
       {%- if p is none -%}—{%- else -%}{{ "%.2f"|format(p) }}%{%- endif -%}
     {%- endmacro %}
 
+    {%- macro render_groups(group_dict) -%}
+    {% for group_name, rows in group_dict.items() %}
+      {% set is_rancher_group = group_name.startswith("Rancher servers") %}
+      <section>
+        <h2>{{ group_name }}{% if is_rancher_group and cluster_summary %} · LB on {{ cluster_summary.lb_coverage }}/{{ cluster_summary.hosts_total }} · {{ cluster_summary.dns_ingress_count }} on DNS{% endif %}</h2>
+        <div class="svc-list">
+          {% for row in rows %}
+            {% set r = row.result %}
+            {% set rh = none %}
+            {% if is_rancher_group %}
+              {%- set _short = r.name.split('.')[0].lower() -%}
+              {%- set rh = cluster_hosts_by_short.get(_short) -%}
+            {% endif %}
+            <div class="svc">
+              <div class="svc-status"><span class="pill {{ r.status }}">{{ r.status }}</span></div>
+              <div class="svc-name">
+                <a href="{{ r.url }}" rel="noopener noreferrer" target="_blank">{{ r.name }}</a>
+                {% if rh %}
+                  <span class="host-badges">
+                    <span class="badge {{ 'badge-up' if rh.state == 'active' else 'badge-down' }}" title="Rancher state: {{ rh.state }}{% if rh.agent_state %} / agent {{ rh.agent_state }}{% endif %}">rancher: {{ rh.state }}</span>
+                    {% if rh.has_lb %}<span class="badge badge-info" title="vfb-loadbalancer-main running on this host">LB</span>{% endif %}
+                    {% if rh.is_dns_ingress %}<span class="badge badge-dns" title="virtualflybrain.org DNS A-record points at this host's agentIpAddress ({{ rh.agent_ip }})">DNS</span>{% endif %}
+                  </span>
+                {% endif %}
+                {% if r.error %}<div class="svc-err">{{ r.error }}</div>{% endif %}
+              </div>
+              <div class="svc-meta">
+                {{ r.http_status if r.http_status is not none else "—" }}
+                {% if r.latency_ms is not none %} · {{ r.latency_ms }} ms{% endif %}
+              </div>
+              <div class="strip-cell">
+                <div class="strip" aria-label="last {{ history_buckets }} buckets, oldest left">
+                  {% for b in row.buckets %}
+                    <div class="bucket {{ b }}" title="bucket {{ loop.index0 }}: {{ b }}"></div>
+                  {% endfor %}
+                </div>
+              </div>
+              <div class="uptime">
+                <span class="pct {% if row.uptime_24h is not none and row.uptime_24h < 99 %}low{% endif %}">24h {{ fmt_pct(row.uptime_24h, row.n_24h) }}</span>
+                <span>7d {{ fmt_pct(row.uptime_7d, row.n_7d) }}</span>
+                <span>30d {{ fmt_pct(row.uptime_30d, row.n_30d) }}</span>
+              </div>
+            </div>
+          {% endfor %}
+        </div>
+      </section>
+    {% endfor %}
+    {%- endmacro %}
+
+    {# Core user-facing renders first, before the specialised sections #}
+    {{ render_groups(priority_groups) }}
+
     {% macro fmt_int(n) -%}
       {%- if n is none -%}—{%- else -%}{{ "{:,}".format(n) }}{%- endif -%}
     {%- endmacro %}
@@ -352,8 +404,6 @@
             {% set spec = c.spec %}
             {% set s = c.summary %}
             {% set containers = c.containers %}
-            {% set first_err = containers|selectattr('error')|map(attribute='error')|first %}
-            {% set is_all_auth_err = containers|length > 0 and (containers|selectattr('error')|map(attribute='error')|select('search', '(401|Unauthorized|auth)')|list|length) == (containers|length) %}
             <article class="cache-card">
               <header>
                 <div>
@@ -369,12 +419,12 @@
                   <span class="pill up">online</span>
                 {% elif s.container_count == 0 %}
                   <span class="pill unknown">no data</span>
-                {% elif is_all_auth_err %}
+                {% elif s.is_all_auth_err %}
                   <span class="pill auth" title="auth failed — check `password:` or NEO4J_PASSWORD">auth?</span>
                 {% elif s.ok_count > 0 %}
                   <span class="pill down" title="{{ s.container_count - s.ok_count }} container(s) failing">partial</span>
                 {% else %}
-                  <span class="pill down" title="{{ first_err or 'down' }}">down</span>
+                  <span class="pill down" title="{{ s.first_err or 'down' }}">down</span>
                 {% endif %}
               </header>
 
@@ -432,7 +482,14 @@
                   <div class="chart-label">Node count over time (cluster max)</div>
                   {{ sparkline(c.count_pts, width=320, height=42, color="#7d4cd0", fill="rgba(125,76,208,0.15)") }}
                 </div>
-              {% elif s.container_count == 0 %}
+              {% endif %}
+              {% if c.latency_pts %}
+                <div class="cache-chart">
+                  <div class="chart-label">Query latency over time (cluster avg, ms)</div>
+                  {{ sparkline(c.latency_pts, width=320, height=42, color="#3498db", fill="rgba(52,152,219,0.15)") }}
+                </div>
+              {% endif %}
+              {% if not c.count_pts and not c.latency_pts and s.container_count == 0 %}
                 <div class="cache-err">no data yet — first probe pending</div>
               {% endif %}
             </article>
@@ -637,52 +694,8 @@
       </section>
     {% endif %}
 
-    {% for group_name, rows in groups.items() %}
-      {% set is_rancher_group = group_name.startswith("Rancher servers") %}
-      <section>
-        <h2>{{ group_name }}{% if is_rancher_group and cluster_summary %} · LB on {{ cluster_summary.lb_coverage }}/{{ cluster_summary.hosts_total }} · {{ cluster_summary.dns_ingress_count }} on DNS{% endif %}</h2>
-        <div class="svc-list">
-          {% for row in rows %}
-            {% set r = row.result %}
-            {% set rh = none %}
-            {% if is_rancher_group %}
-              {%- set _short = r.name.split('.')[0].lower() -%}
-              {%- set rh = cluster_hosts_by_short.get(_short) -%}
-            {% endif %}
-            <div class="svc">
-              <div class="svc-status"><span class="pill {{ r.status }}">{{ r.status }}</span></div>
-              <div class="svc-name">
-                <a href="{{ r.url }}" rel="noopener noreferrer" target="_blank">{{ r.name }}</a>
-                {% if rh %}
-                  <span class="host-badges">
-                    <span class="badge {{ 'badge-up' if rh.state == 'active' else 'badge-down' }}" title="Rancher state: {{ rh.state }}{% if rh.agent_state %} / agent {{ rh.agent_state }}{% endif %}">rancher: {{ rh.state }}</span>
-                    {% if rh.has_lb %}<span class="badge badge-info" title="vfb-loadbalancer-main running on this host">LB</span>{% endif %}
-                    {% if rh.is_dns_ingress %}<span class="badge badge-dns" title="virtualflybrain.org DNS A-record points at this host's agentIpAddress ({{ rh.agent_ip }})">DNS</span>{% endif %}
-                  </span>
-                {% endif %}
-                {% if r.error %}<div class="svc-err">{{ r.error }}</div>{% endif %}
-              </div>
-              <div class="svc-meta">
-                {{ r.http_status if r.http_status is not none else "—" }}
-                {% if r.latency_ms is not none %} · {{ r.latency_ms }} ms{% endif %}
-              </div>
-              <div class="strip-cell">
-                <div class="strip" aria-label="last {{ history_buckets }} buckets, oldest left">
-                  {% for b in row.buckets %}
-                    <div class="bucket {{ b }}" title="bucket {{ loop.index0 }}: {{ b }}"></div>
-                  {% endfor %}
-                </div>
-              </div>
-              <div class="uptime">
-                <span class="pct {% if row.uptime_24h is not none and row.uptime_24h < 99 %}low{% endif %}">24h {{ fmt_pct(row.uptime_24h, row.n_24h) }}</span>
-                <span>7d {{ fmt_pct(row.uptime_7d, row.n_7d) }}</span>
-                <span>30d {{ fmt_pct(row.uptime_30d, row.n_30d) }}</span>
-              </div>
-            </div>
-          {% endfor %}
-        </div>
-      </section>
-    {% endfor %}
+    {# Remaining groups (everything except Core user-facing which is rendered at the top) #}
+    {{ render_groups(rest_groups) }}
 
     <footer>
       <a href="/api/status">/api/status</a> ·

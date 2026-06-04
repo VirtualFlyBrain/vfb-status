@@ -2,6 +2,18 @@
 
 All notable changes to vfb-status are recorded here. The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.0] — 2026-06-04
+
+### Added
+
+- KB Neo4j (`kb.virtualflybrain.org`) now per-container: probes each `vfb-neo4j-kb-readonly` member (service `1s56`, scale 2) at `http://<primaryIpAddress>:7474`. Same SHOW DATABASES + count probe; same cluster summary + per-container table on the card.
+- Latency-over-time sparkline on each Neo4j card, below the node-count chart. Plots `AVG(latency_ms)` across cluster members per timestamp.
+- Auth-failure detection on Neo4j cards now applies to the whole cluster — if every container errors with a 401/Unauthorized, the card shows an amber `auth?` pill instead of red `down`. (Previously a single-container check.)
+
+### Changed
+
+- **`Core user-facing` group now renders at the very top of the page**, above the specialised sections (Rancher cluster, Neo4j databases, Application services, Caching services). The remaining groups stay in their original order below. Driven by a new `priority_groups` / `rest_groups` split passed to the template.
+
 ## [0.9.0] — 2026-06-04
 
 Per-container probing for `neo4j_services` + new ServerONLY PDB entry.
@@ -221,6 +233,7 @@ Initial release. Self-contained Docker uptime tracker for public-facing Virtual 
 - Four subdomains (`nas0`, `iip3d`, `nblast`, `abd1-5.catmaid`) ship with `verify_tls: false` because the production cert SAN doesn't cover them. The servers are up; the cert provisioning is a separate problem.
 - Kubernetes nodes are intentionally not handled here — separate checks planned for a later release.
 
+[0.10.0]: https://github.com/VirtualFlyBrain/vfb-status/releases/tag/v0.10.0
 [0.9.0]: https://github.com/VirtualFlyBrain/vfb-status/releases/tag/v0.9.0
 [0.8.2]: https://github.com/VirtualFlyBrain/vfb-status/releases/tag/v0.8.2
 [0.8.1]: https://github.com/VirtualFlyBrain/vfb-status/releases/tag/v0.8.1

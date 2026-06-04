@@ -230,7 +230,11 @@ neo4j_services:
     min_nodes: 1
     timeout: 20
     fronts: Knowledge Base (curation graph)
-    # No rancher: block — KB is a single-instance service via LB.
+    # vfb-neo4j-kb-readonly is the public KB read-only cluster (scale 2).
+    rancher:
+      service_url: https://herd.virtualflybrain.org/v2-beta/projects/1a5/services/1s56
+      container_port: 7474
+      container_scheme: http
 
 # Application services exposing their own /status JSON (shape: vfbquery, ...).
 # Probed on the same schedule as everything else; metrics stored in
