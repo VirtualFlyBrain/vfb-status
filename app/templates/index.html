@@ -498,6 +498,115 @@
       </section>
     {% endif %}
 
+    {% if solr_cards %}
+      <section>
+        <h2>Solr — load over time</h2>
+        <div class="cache-grid">
+          {% for c in solr_cards %}
+            {% set spec = c.spec %}
+            {% set s = c.summary %}
+            {% set containers = c.containers %}
+            <article class="cache-card">
+              <header>
+                <div>
+                  <a class="cache-name" href="{{ spec.base_url }}/solr/{{ spec.core }}/admin/system?wt=json" rel="noopener noreferrer" target="_blank">{{ spec.name }}</a>
+                  {% if s.version_display %}
+                    {% if s.version_mixed %}
+                      <span class="badge badge-down" title="containers reported different versions: {{ s.versions|join(', ') }}">v{{ s.version_display }} ⚠ mixed</span>
+                    {% else %}
+                      <span class="badge badge-info">v{{ s.version_display }}</span>
+                    {% endif %}
+                  {% endif %}
+                  <div class="cache-fronts">
+                    {% if spec.fronts %}{{ spec.fronts }} · {% endif %}
+                    core={{ spec.core }} ·
+                    {{ s.container_count }} container{{ '' if s.container_count == 1 else 's' }} ({{ s.ok_count }} ok)
+                  </div>
+                </div>
+                {% if s.container_count > 0 and s.ok_count == s.container_count %}
+                  <span class="pill up">ok</span>
+                {% elif s.container_count == 0 %}
+                  <span class="pill unknown">no data</span>
+                {% elif s.ok_count > 0 %}
+                  <span class="pill down" title="{{ s.container_count - s.ok_count }} container(s) failing">partial</span>
+                {% else %}
+                  <span class="pill down" title="{{ s.first_err or 'down' }}">down</span>
+                {% endif %}
+              </header>
+
+              {% if s.ok_count > 0 %}
+                <dl class="cache-stats">
+                  <div><dt>jvm mem</dt><dd>{% if s.jvm_mem_used_pct_avg is not none %}{{ "%.0f"|format(s.jvm_mem_used_pct_avg) }}%{% else %}—{% endif %}</dd></div>
+                  <div><dt>load avg</dt><dd>{% if s.system_load_max is not none %}{{ "%.2f"|format(s.system_load_max) }}{% else %}—{% endif %}</dd></div>
+                  <div><dt>queries (total)</dt><dd>{{ fmt_int(s.q_requests_total) }}</dd></div>
+                  <div><dt>query rate</dt><dd>{% if s.q_mean_rate_sum is not none %}{{ "%.2f"|format(s.q_mean_rate_sum) }}/s{% else %}—{% endif %}</dd></div>
+                  <div><dt>updates (total)</dt><dd>{{ fmt_int(s.u_requests_total) }}</dd></div>
+                  <div><dt>update rate</dt><dd>{% if s.u_mean_rate_sum is not none %}{{ "%.2f"|format(s.u_mean_rate_sum) }}/s{% else %}—{% endif %}</dd></div>
+                </dl>
+              {% endif %}
+
+              {% if containers|length > 1 or (containers|length == 1 and containers[0].container) %}
+                <table class="container-rows">
+                  <thead>
+                    <tr>
+                      <th>container</th>
+                      <th>status</th>
+                      <th>mem %</th>
+                      <th>load</th>
+                      <th>q req</th>
+                      <th>u req</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {% for cc in containers %}
+                      <tr>
+                        <td>{{ cc.container or '(LB)' }}</td>
+                        <td>
+                          {% if cc.ok %}<span class="pill up">ok</span>{% else %}<span class="pill down" title="{{ cc.error or '' }}">err</span>{% endif %}
+                        </td>
+                        <td>{% if cc.jvm_mem_used_pct is not none %}{{ "%.0f"|format(cc.jvm_mem_used_pct) }}%{% else %}—{% endif %}</td>
+                        <td>{% if cc.system_load is not none %}{{ "%.2f"|format(cc.system_load) }}{% else %}—{% endif %}</td>
+                        <td>{{ fmt_int(cc.q_requests) }}</td>
+                        <td>{{ fmt_int(cc.u_requests) }}</td>
+                      </tr>
+                      {% if cc.error %}
+                        <tr><td colspan="6" class="svc-err">{{ cc.error }}</td></tr>
+                      {% endif %}
+                    {% endfor %}
+                  </tbody>
+                </table>
+              {% endif %}
+
+              {% if c.mem_pts %}
+                <div class="cache-chart">
+                  <div class="chart-label">JVM memory % over time (cluster avg)</div>
+                  {{ sparkline(c.mem_pts, width=320, height=42, color="#7d4cd0", fill="rgba(125,76,208,0.15)") }}
+                </div>
+              {% endif %}
+              {% if c.q_rate_pts %}
+                <div class="cache-chart">
+                  <div class="chart-label">Query requests per check (Δ total, cluster)</div>
+                  {{ sparkline(c.q_rate_pts, width=320, height=42, color="#3498db", fill="rgba(52,152,219,0.15)") }}
+                </div>
+              {% endif %}
+              {% if c.u_rate_pts %}
+                <div class="cache-chart">
+                  <div class="chart-label">Update requests per check (Δ total, cluster)</div>
+                  {{ sparkline(c.u_rate_pts, width=320, height=42, color="var(--down)", fill="rgba(192,57,43,0.12)") }}
+                </div>
+              {% endif %}
+              {% if c.load_pts %}
+                <div class="cache-chart">
+                  <div class="chart-label">System load avg over time</div>
+                  {{ sparkline(c.load_pts, width=320, height=42, color="#d18a16", fill="rgba(209,138,22,0.12)") }}
+                </div>
+              {% endif %}
+            </article>
+          {% endfor %}
+        </div>
+      </section>
+    {% endif %}
+
     {% if app_cards %}
       <section>
         <h2>Application services — /status</h2>
@@ -703,6 +812,7 @@
       <a href="/api/cache">/api/cache</a> ·
       <a href="/api/app">/api/app</a> ·
       <a href="/api/neo4j">/api/neo4j</a> ·
+      <a href="/api/solr">/api/solr</a> ·
       <a href="/api/cluster">/api/cluster</a> ·
       <a href="/healthz">/healthz</a> ·
       <a href="https://github.com/VirtualFlyBrain/vfb-status">source</a>

@@ -236,6 +236,28 @@ neo4j_services:
       container_port: 7474
       container_scheme: http
 
+# Solr services. Probes /solr/<core>/admin/system for JVM memory + system load
+# and /solr/<core>/admin/mbeans?stats=true for /select and /update handler
+# stats (cumulative requests + meanRate). Per-container probing via Rancher
+# v1 API; fallback to LB-fronted probe.
+solr_services:
+  - name: SOLR (solr.virtualflybrain.org)
+    base_url: https://solr.virtualflybrain.org
+    core: ontology
+    fronts: Public Solr (1s103 solr-vfb-service)
+    rancher:
+      service_url: https://herd.virtualflybrain.org/v2-beta/projects/1a5/services/1s103
+      container_port: 8983
+      container_scheme: http
+  - name: SOLR — ServerONLY (1s263)
+    base_url: https://solr.virtualflybrain.org   # fallback only
+    core: ontology
+    fronts: Server-only Solr replica
+    rancher:
+      service_url: https://herd.virtualflybrain.org/v2-beta/projects/1a5/services/1s263
+      container_port: 8983
+      container_scheme: http
+
 # Application services exposing their own /status JSON (shape: vfbquery, ...).
 # Probed on the same schedule as everything else; metrics stored in
 # `app_history` and rendered as cards with sparklines on the page.

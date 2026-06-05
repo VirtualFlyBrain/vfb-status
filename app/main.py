@@ -200,6 +200,58 @@ class Neo4jCheck:
 
 
 @dataclass
+class SolrServiceSpec:
+    """A Solr instance whose admin endpoints expose JVM memory, system load,
+    and per-handler request stats. Per-container probing via Rancher API for
+    services with scale > 1; fallback to LB-fronted single probe.
+    """
+
+    name: str
+    base_url: str
+    core: str = "ontology"
+    fronts: str | None = None
+    timeout: float = 12.0
+    verify_tls: bool = True
+    rancher: "RancherEnumeration | None" = None
+
+
+@dataclass
+class SolrCheck:
+    name: str
+    base_url: str
+    core: str
+    ok: bool
+    checked_at: str
+    container: str | None = None
+    latency_ms: int | None = None
+    error: str | None = None
+    # JVM memory (bytes from .raw)
+    jvm_mem_used: int | None = None
+    jvm_mem_free: int | None = None
+    jvm_mem_total: int | None = None
+    jvm_mem_max: int | None = None
+    jvm_mem_used_pct: float | None = None
+    # System
+    system_load: float | None = None
+    open_fds: int | None = None
+    max_fds: int | None = None
+    host_mem_total: int | None = None
+    host_mem_free: int | None = None
+    # Solr versions
+    solr_version: str | None = None
+    # /select handler
+    q_requests: int | None = None
+    q_mean_rate: float | None = None
+    q_errors: int | None = None
+    q_timeouts: int | None = None
+    q_total_time_ns: int | None = None
+    # /update handler
+    u_requests: int | None = None
+    u_mean_rate: float | None = None
+    u_errors: int | None = None
+
+
+@dataclass
 class RancherHost:
     id: str
     hostname: str          # full hostname, e.g. "buttermilk.inf.ed.ac.uk"
@@ -362,6 +414,38 @@ def load_services(path: Path) -> list[ServiceSpec]:
             )
     log.info("loaded %d services from %s", len(services), path)
     return services
+
+
+def load_solr_services(path: Path) -> list[SolrServiceSpec]:
+    raw = yaml.safe_load(path.read_text())
+    out: list[SolrServiceSpec] = []
+    for svc in raw.get("solr_services", []) or []:
+        ranch = None
+        rblk = svc.get("rancher")
+        if rblk:
+            ranch = RancherEnumeration(
+                service_url=rblk["service_url"].rstrip("/"),
+                container_port=int(rblk.get("container_port", 8983)),
+                container_path=rblk.get("container_path", ""),  # ignored
+                container_scheme=rblk.get("container_scheme", "http"),
+                api_key_env=rblk.get("api_key_env", "RANCHER_API_KEY"),
+                api_secret_env=rblk.get("api_secret_env", "RANCHER_API_SECRET"),
+                timeout=float(rblk.get("timeout", 12.0)),
+            )
+        out.append(
+            SolrServiceSpec(
+                name=svc["name"],
+                base_url=svc["base_url"].rstrip("/"),
+                core=svc.get("core", "ontology"),
+                fronts=svc.get("fronts"),
+                timeout=float(svc.get("timeout", 12.0)),
+                verify_tls=bool(svc.get("verify_tls", True)),
+                rancher=ranch,
+            )
+        )
+    if out:
+        log.info("loaded %d solr services from %s", len(out), path)
+    return out
 
 
 def load_neo4j_services(path: Path) -> list[Neo4jServiceSpec]:
@@ -1064,6 +1148,168 @@ async def probe_all_neo4j(services: Iterable[Neo4jServiceSpec]) -> list[Neo4jChe
         return flat
 
 
+# ----- Solr probing ---------------------------------------------------------
+
+
+async def _probe_solr_at(
+    client: httpx.AsyncClient,
+    svc: SolrServiceSpec,
+    base_url: str,
+    container: str | None = None,
+) -> SolrCheck:
+    """Fetch /solr/<core>/admin/system and /solr/<core>/admin/mbeans for the
+    /select and /update handlers, fold into a SolrCheck. Never raises.
+    """
+    started = datetime.now(timezone.utc)
+    iso_started = started.isoformat(timespec="seconds")
+    headers = {"User-Agent": USER_AGENT, "Accept": "application/json"}
+
+    sys_url = f"{base_url}/solr/{svc.core}/admin/system?wt=json"
+    mbeans_url = (
+        f"{base_url}/solr/{svc.core}/admin/mbeans"
+        "?stats=true&wt=json&key=/select&key=/update&compact=true"
+    )
+
+    async def _get(url: str) -> tuple[bool, dict[str, Any] | None, str | None]:
+        try:
+            resp = await client.get(url, timeout=svc.timeout, headers=headers,
+                                    follow_redirects=True)
+            if resp.status_code != 200:
+                return False, None, f"HTTP {resp.status_code}"
+            try:
+                return True, resp.json(), None
+            except Exception as exc:  # noqa: BLE001
+                return False, None, f"non-JSON: {exc}"
+        except httpx.TimeoutException:
+            return False, None, f"timeout after {svc.timeout}s"
+        except Exception as exc:  # noqa: BLE001
+            return False, None, f"{type(exc).__name__}: {exc}"
+
+    sys_ok, sys_body, sys_err = await _get(sys_url)
+    if not sys_ok or sys_body is None:
+        return SolrCheck(
+            name=svc.name, base_url=base_url, core=svc.core, ok=False,
+            checked_at=iso_started, container=container,
+            error=f"admin/system: {sys_err}",
+        )
+    jvm = sys_body.get("jvm") or {}
+    mem_raw = (jvm.get("memory") or {}).get("raw") or {}
+    sys_info = sys_body.get("system") or {}
+    lucene = sys_body.get("lucene") or {}
+
+    mb_ok, mb_body, mb_err = await _get(mbeans_url)
+    q_requests = q_mean = q_errors = q_timeouts = q_total = None
+    u_requests = u_mean = u_errors = None
+    if mb_ok and mb_body is not None:
+        beans = mb_body.get("solr-mbeans") or []
+        # beans alternates [cat_name, handlers_dict, ...]
+        for i in range(0, len(beans), 2):
+            cat = beans[i] if i < len(beans) else None
+            handlers = beans[i + 1] if i + 1 < len(beans) else {}
+            if not isinstance(handlers, dict):
+                continue
+            for hname, hdata in handlers.items():
+                stats = (hdata.get("stats") or {}) if isinstance(hdata, dict) else {}
+                if cat == "QUERY" and hname == "/select":
+                    q_requests = _to_int(stats.get("QUERY./select.requests"))
+                    q_errors = _to_int(stats.get("QUERY./select.errors.count"))
+                    q_timeouts = _to_int(stats.get("QUERY./select.timeouts.count"))
+                    q_total = _to_int(stats.get("QUERY./select.totalTime"))
+                    mr = stats.get("QUERY./select.requestTimes.meanRate")
+                    q_mean = float(mr) if mr is not None else None
+                elif cat == "UPDATE" and hname == "/update":
+                    u_requests = _to_int(stats.get("UPDATE./update.requests"))
+                    u_errors = _to_int(stats.get("UPDATE./update.errors.count"))
+                    mr = stats.get("UPDATE./update.requestTimes.meanRate")
+                    u_mean = float(mr) if mr is not None else None
+
+    latency_ms = int((datetime.now(timezone.utc) - started).total_seconds() * 1000)
+    return SolrCheck(
+        name=svc.name, base_url=base_url, core=svc.core, ok=True,
+        checked_at=iso_started, container=container, latency_ms=latency_ms,
+        error=(f"mbeans: {mb_err}" if (not mb_ok and mb_err) else None),
+        jvm_mem_used=_to_int(mem_raw.get("used")),
+        jvm_mem_free=_to_int(mem_raw.get("free")),
+        jvm_mem_total=_to_int(mem_raw.get("total")),
+        jvm_mem_max=_to_int(mem_raw.get("max")),
+        jvm_mem_used_pct=(
+            float(mem_raw.get("used%")) if mem_raw.get("used%") is not None else None
+        ),
+        system_load=(
+            float(sys_info.get("systemLoadAverage"))
+            if sys_info.get("systemLoadAverage") is not None else None
+        ),
+        open_fds=_to_int(sys_info.get("openFileDescriptorCount")),
+        max_fds=_to_int(sys_info.get("maxFileDescriptorCount")),
+        host_mem_total=_to_int(sys_info.get("totalPhysicalMemorySize")),
+        host_mem_free=_to_int(sys_info.get("freePhysicalMemorySize")),
+        solr_version=(lucene.get("solr-spec-version") if isinstance(lucene, dict) else None),
+        q_requests=q_requests, q_mean_rate=q_mean, q_errors=q_errors,
+        q_timeouts=q_timeouts, q_total_time_ns=q_total,
+        u_requests=u_requests, u_mean_rate=u_mean, u_errors=u_errors,
+    )
+
+
+async def probe_solr(
+    client_verify: httpx.AsyncClient,
+    client_no_verify: httpx.AsyncClient,
+    svc: SolrServiceSpec,
+) -> list[SolrCheck]:
+    """Probe a Solr service. Per-container when rancher: is set, else LB-fronted.
+    Never raises.
+    """
+    started_iso = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    client = client_verify if svc.verify_tls else client_no_verify
+
+    if svc.rancher is None:
+        return [await _probe_solr_at(client, svc, svc.base_url)]
+
+    ranch = svc.rancher
+    instances, rerr = await _rancher_list_instances(client_verify, ranch)
+    if instances is None:
+        log.warning("solr %s: rancher enumeration failed: %s", svc.name, rerr)
+        fallback = await _probe_solr_at(client, svc, svc.base_url)
+        if fallback.error:
+            fallback.error = f"{fallback.error} [rancher: {rerr}]"
+        else:
+            fallback.error = f"[rancher: {rerr}]"
+        return [fallback]
+
+    if not instances:
+        return [
+            SolrCheck(
+                name=svc.name, base_url=svc.base_url, core=svc.core, ok=False,
+                checked_at=started_iso,
+                error="Rancher API returned no running instances",
+            )
+        ]
+
+    async def _probe_one(inst: dict[str, Any]) -> SolrCheck:
+        ip = inst.get("primaryIpAddress")
+        cname = inst.get("name") or inst.get("id") or "unknown"
+        if not ip:
+            return SolrCheck(
+                name=svc.name, base_url=svc.base_url, core=svc.core, ok=False,
+                checked_at=started_iso, container=cname,
+                error="instance has no primaryIpAddress",
+            )
+        url = f"{ranch.container_scheme}://{ip}:{ranch.container_port}"
+        return await _probe_solr_at(client, svc, url, container=cname)
+
+    return list(await asyncio.gather(*[_probe_one(i) for i in instances]))
+
+
+async def probe_all_solr(services: Iterable[SolrServiceSpec]) -> list[SolrCheck]:
+    if not services:
+        return []
+    async with httpx.AsyncClient(verify=True) as cv, httpx.AsyncClient(verify=False) as cnv:
+        nested = await asyncio.gather(*[probe_solr(cv, cnv, s) for s in services])
+        flat: list[SolrCheck] = []
+        for batch in nested:
+            flat.extend(batch)
+        return flat
+
+
 # ----- Rancher cluster overview ----------------------------------------------
 
 
@@ -1340,6 +1586,39 @@ class History:
     );
     CREATE INDEX IF NOT EXISTS idx_rs_service_ts ON rancher_service_history (service_id, ts);
     CREATE INDEX IF NOT EXISTS idx_rs_ts ON rancher_service_history (ts);
+
+    CREATE TABLE IF NOT EXISTS solr_history (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        service TEXT NOT NULL,
+        container TEXT,
+        ts INTEGER NOT NULL,
+        checked_at TEXT NOT NULL,
+        ok INTEGER NOT NULL,
+        latency_ms INTEGER,
+        error TEXT,
+        jvm_mem_used INTEGER,
+        jvm_mem_free INTEGER,
+        jvm_mem_total INTEGER,
+        jvm_mem_max INTEGER,
+        jvm_mem_used_pct REAL,
+        system_load REAL,
+        open_fds INTEGER,
+        max_fds INTEGER,
+        host_mem_total INTEGER,
+        host_mem_free INTEGER,
+        solr_version TEXT,
+        q_requests INTEGER,
+        q_mean_rate REAL,
+        q_errors INTEGER,
+        q_timeouts INTEGER,
+        q_total_time_ns INTEGER,
+        u_requests INTEGER,
+        u_mean_rate REAL,
+        u_errors INTEGER
+    );
+    CREATE INDEX IF NOT EXISTS idx_solr_service_ts ON solr_history (service, ts);
+    CREATE INDEX IF NOT EXISTS idx_solr_service_container_ts ON solr_history (service, container, ts);
+    CREATE INDEX IF NOT EXISTS idx_solr_ts ON solr_history (ts);
     """
 
     def __init__(self, path: Path | None) -> None:
@@ -1498,14 +1777,98 @@ class History:
         removed_rh = cur.rowcount or 0
         cur.execute("DELETE FROM rancher_service_history WHERE ts < ?", (cutoff,))
         removed_rs = cur.rowcount or 0
-        total = removed_h + removed_c + removed_a + removed_n + removed_rh + removed_rs
+        cur.execute("DELETE FROM solr_history WHERE ts < ?", (cutoff,))
+        removed_so = cur.rowcount or 0
+        total = removed_h + removed_c + removed_a + removed_n + removed_rh + removed_rs + removed_so
         if total:
             log.info(
-                "history: pruned %d svc + %d cache + %d app + %d neo4j + %d rh + %d rs older than %dd",
+                "history: pruned %d svc + %d cache + %d app + %d neo4j + %d rh + %d rs + %d solr older than %dd",
                 removed_h, removed_c, removed_a, removed_n, removed_rh, removed_rs,
-                retention_days,
+                removed_so, retention_days,
             )
         return total
+
+    def record_solr(self, results: Iterable[SolrCheck]) -> None:
+        if self._conn is None:
+            return
+        rows = [
+            (
+                r.name, r.container, int(time.time()), r.checked_at,
+                1 if r.ok else 0, r.latency_ms, r.error,
+                r.jvm_mem_used, r.jvm_mem_free, r.jvm_mem_total, r.jvm_mem_max,
+                r.jvm_mem_used_pct, r.system_load, r.open_fds, r.max_fds,
+                r.host_mem_total, r.host_mem_free, r.solr_version,
+                r.q_requests, r.q_mean_rate, r.q_errors, r.q_timeouts,
+                r.q_total_time_ns, r.u_requests, r.u_mean_rate, r.u_errors,
+            )
+            for r in results
+        ]
+        cur = self._conn.cursor()
+        try:
+            cur.execute("BEGIN")
+            cur.executemany(
+                "INSERT INTO solr_history "
+                "(service, container, ts, checked_at, ok, latency_ms, error, "
+                " jvm_mem_used, jvm_mem_free, jvm_mem_total, jvm_mem_max, "
+                " jvm_mem_used_pct, system_load, open_fds, max_fds, "
+                " host_mem_total, host_mem_free, solr_version, "
+                " q_requests, q_mean_rate, q_errors, q_timeouts, q_total_time_ns, "
+                " u_requests, u_mean_rate, u_errors) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                rows,
+            )
+            cur.execute("COMMIT")
+        except Exception:
+            cur.execute("ROLLBACK")
+            raise
+
+    def solr_series(
+        self, service: str, since_seconds: int, max_points: int = 120
+    ) -> list[dict[str, Any]]:
+        """Down-sampled, oldest-first. Aggregates per ts:
+        AVG(memory %), AVG(load), MAX(q_requests), MAX(u_requests).
+        MAX on the counters means we pick the leader; the delta we plot is the
+        delta of the MAX which is always >= 0.
+        """
+        if self._conn is None:
+            return []
+        cutoff = int(time.time()) - since_seconds
+        try:
+            cur = self._conn.execute(
+                "SELECT ts, "
+                " MAX(ok) AS any_ok, "
+                " AVG(jvm_mem_used_pct) AS jvm_mem_used_pct, "
+                " SUM(jvm_mem_used) AS jvm_mem_used, "
+                " AVG(system_load) AS system_load, "
+                " MAX(q_requests) AS q_requests, "
+                " MAX(u_requests) AS u_requests, "
+                " AVG(q_mean_rate) AS q_mean_rate, "
+                " AVG(u_mean_rate) AS u_mean_rate "
+                "FROM solr_history WHERE service = ? AND ts >= ? "
+                "GROUP BY ts ORDER BY ts ASC",
+                (service, cutoff),
+            )
+            rows = cur.fetchall()
+        except sqlite3.Error as exc:
+            log.warning("solr_series read failed for %s: %s", service, exc)
+            return []
+        if not rows:
+            return []
+        step = max(1, len(rows) // max_points)
+        return [
+            {
+                "ts": ts,
+                "ok": bool(ok) if ok is not None else False,
+                "jvm_mem_used_pct": (float(pct) if pct is not None else None),
+                "jvm_mem_used": (int(used) if used is not None else None),
+                "system_load": (float(ld) if ld is not None else None),
+                "q_requests": qr,
+                "u_requests": ur,
+                "q_mean_rate": qm,
+                "u_mean_rate": um,
+            }
+            for ts, ok, pct, used, ld, qr, ur, qm, um in rows[::step]
+        ]
 
     def record_rancher_cluster(self, result: RancherClusterResult) -> None:
         if self._conn is None or not result.ok:
@@ -1941,16 +2304,19 @@ class State:
         cache_services: list[CacheServiceSpec] | None = None,
         app_services: list[AppServiceSpec] | None = None,
         neo4j_services: list[Neo4jServiceSpec] | None = None,
+        solr_services: list[SolrServiceSpec] | None = None,
         history: History | None = None,
     ):
         self.services = services
         self.cache_services = cache_services or []
         self.app_services = app_services or []
         self.neo4j_services = neo4j_services or []
+        self.solr_services = solr_services or []
         self.results: dict[str, CheckResult] = {}
         self.cache_results: dict[str, list[CacheCheck]] = {}
         self.app_results: dict[str, list[AppCheck]] = {}
         self.neo4j_results: dict[str, list[Neo4jCheck]] = {}
+        self.solr_results: dict[str, list[SolrCheck]] = {}
         self.cluster_result: RancherClusterResult | None = None
         self.last_run: str | None = None
         self.running = False
@@ -1996,11 +2362,12 @@ class State:
                     len(self.cache_services),
                     len(self.app_services),
                 )
-                results, cache_results, app_results, neo4j_results, cluster_result = await asyncio.gather(
+                results, cache_results, app_results, neo4j_results, solr_results, cluster_result = await asyncio.gather(
                     probe_all(self.services),
                     probe_all_caches(self.cache_services),
                     probe_all_apps(self.app_services),
                     probe_all_neo4j(self.neo4j_services),
+                    probe_all_solr(self.solr_services),
                     probe_rancher_cluster(),
                 )
                 for r in results:
@@ -2014,6 +2381,9 @@ class State:
                 self.neo4j_results = {}
                 for nr in neo4j_results:
                     self.neo4j_results.setdefault(nr.name, []).append(nr)
+                self.solr_results = {}
+                for sr in solr_results:
+                    self.solr_results.setdefault(sr.name, []).append(sr)
                 self.cluster_result = cluster_result
                 self.last_run = datetime.now(timezone.utc).isoformat(timespec="seconds")
                 self.persist()
@@ -2026,6 +2396,8 @@ class State:
                             self.history.record_app(app_results)
                         if neo4j_results:
                             self.history.record_neo4j(neo4j_results)
+                        if solr_results:
+                            self.history.record_solr(solr_results)
                         if cluster_result is not None:
                             self.history.record_rancher_cluster(cluster_result)
                     except Exception as exc:  # noqa: BLE001
@@ -2035,6 +2407,7 @@ class State:
                 cache_total = len({c.name for c in cache_results}) or len(self.cache_services)
                 app_ok = sum(1 for a in app_results if a.ok)
                 neo_ok = sum(1 for n in neo4j_results if n.ok)
+                solr_ok = sum(1 for s in solr_results if s.ok)
                 cluster_msg = ""
                 if cluster_result is not None:
                     if cluster_result.ok:
@@ -2048,9 +2421,10 @@ class State:
                         cluster_msg = f", cluster: {cluster_result.error}"
                 log.info(
                     "checks complete: %d/%d up, %d/%d cache rows (%d services), "
-                    "%d/%d apps, %d/%d neo4j%s",
+                    "%d/%d apps, %d/%d neo4j, %d/%d solr%s",
                     up, len(results), cache_ok, len(cache_results), cache_total,
-                    app_ok, len(app_results), neo_ok, len(neo4j_results), cluster_msg,
+                    app_ok, len(app_results), neo_ok, len(neo4j_results),
+                    solr_ok, len(solr_results), cluster_msg,
                 )
             finally:
                 self.running = False
@@ -2065,6 +2439,7 @@ async def lifespan(app: FastAPI):  # type: ignore[no-untyped-def]
     cache_services = load_cache_services(CONFIG_PATH)
     app_services = load_app_services(CONFIG_PATH)
     neo4j_services = load_neo4j_services(CONFIG_PATH)
+    solr_services = load_solr_services(CONFIG_PATH)
     history = History(HISTORY_DB)
     history.prune(HISTORY_RETENTION_DAYS)
     state = State(
@@ -2072,6 +2447,7 @@ async def lifespan(app: FastAPI):  # type: ignore[no-untyped-def]
         cache_services=cache_services,
         app_services=app_services,
         neo4j_services=neo4j_services,
+        solr_services=solr_services,
         history=history,
     )
     state.load_from_disk()
@@ -2221,6 +2597,64 @@ def _neo4j_card(state: State, svc: Neo4jServiceSpec) -> dict[str, Any]:
     }
 
 
+def _solr_card(state: State, svc: SolrServiceSpec) -> dict[str, Any]:
+    containers = state.solr_results.get(svc.name, [])
+    ok_containers = [c for c in containers if c.ok]
+
+    def _avg(attr: str) -> float | None:
+        vals = [getattr(c, attr) for c in ok_containers if getattr(c, attr) is not None]
+        return (sum(vals) / len(vals)) if vals else None
+
+    def _max(attr: str) -> int | None:
+        vals = [getattr(c, attr) for c in ok_containers if getattr(c, attr) is not None]
+        return max(vals) if vals else None
+
+    versions = sorted({c.solr_version for c in ok_containers if c.solr_version})
+    summary = {
+        "container_count": len(containers),
+        "ok_count": len(ok_containers),
+        "versions": versions,
+        "version_mixed": len(versions) > 1,
+        "version_display": versions[0] if len(versions) == 1 else (" / ".join(versions) if versions else None),
+        "jvm_mem_used_pct_avg": _avg("jvm_mem_used_pct"),
+        "system_load_max": _avg("system_load"),  # display the avg for cluster overview
+        "q_requests_total": _max("q_requests"),  # any one container's cumulative
+        "q_mean_rate_sum": (sum(c.q_mean_rate for c in ok_containers if c.q_mean_rate is not None)
+                             if any(c.q_mean_rate is not None for c in ok_containers) else None),
+        "u_requests_total": _max("u_requests"),
+        "u_mean_rate_sum": (sum(c.u_mean_rate for c in ok_containers if c.u_mean_rate is not None)
+                             if any(c.u_mean_rate is not None for c in ok_containers) else None),
+        "first_err": next((c.error for c in containers if not c.ok and c.error), None),
+    }
+    series = state.history.solr_series(
+        svc.name, _cache_chart_window_seconds(), max_points=120
+    )
+    mem_pts = [(r["ts"], r["jvm_mem_used_pct"]) for r in series if r["jvm_mem_used_pct"] is not None]
+    load_pts = [(r["ts"], r["system_load"]) for r in series if r["system_load"] is not None]
+    q_rate_pts: list[tuple[int, int]] = []
+    u_rate_pts: list[tuple[int, int]] = []
+    if len(series) >= 2:
+        prev_q = None
+        prev_u = None
+        for r in series:
+            if prev_q is not None and r["q_requests"] is not None:
+                q_rate_pts.append((r["ts"], max(0, r["q_requests"] - prev_q)))
+            if prev_u is not None and r["u_requests"] is not None:
+                u_rate_pts.append((r["ts"], max(0, r["u_requests"] - prev_u)))
+            prev_q = r["q_requests"] if r["q_requests"] is not None else prev_q
+            prev_u = r["u_requests"] if r["u_requests"] is not None else prev_u
+    return {
+        "spec": svc,
+        "containers": containers,
+        "summary": summary,
+        "series": series,
+        "mem_pts": mem_pts,
+        "load_pts": load_pts,
+        "q_rate_pts": q_rate_pts,
+        "u_rate_pts": u_rate_pts,
+    }
+
+
 def _app_card(state: State, svc: AppServiceSpec) -> dict[str, Any]:
     containers = state.app_results.get(svc.name, [])
     ok_containers = [c for c in containers if c.ok]
@@ -2360,6 +2794,7 @@ async def index(request: Request) -> HTMLResponse:
     cache_cards = [_cache_card(state, s) for s in state.cache_services]
     app_cards = [_app_card(state, s) for s in state.app_services]
     neo4j_cards = [_neo4j_card(state, s) for s in state.neo4j_services]
+    solr_cards = [_solr_card(state, s) for s in state.solr_services]
     # Split the groups dict so the template can render the priority group
     # (Core user-facing) at the very top of the page, then the specialised
     # sections (Rancher cluster, Neo4j, Apps, Caches), then the remaining
@@ -2409,6 +2844,7 @@ async def index(request: Request) -> HTMLResponse:
             "cache_cards": cache_cards,
             "app_cards": app_cards,
             "neo4j_cards": neo4j_cards,
+            "solr_cards": solr_cards,
             "priority_groups": priority_groups,
             "rest_groups": rest_groups,
             "cluster": cluster,
@@ -2562,6 +2998,70 @@ async def api_cluster(request: Request) -> JSONResponse:
             ],
         }
     )
+
+
+@app.get("/api/solr")
+async def api_solr(request: Request) -> JSONResponse:
+    """Per-Solr-service snapshot: cluster summary + per-container details."""
+    state: State = request.app.state.state
+    out = []
+    for svc in state.solr_services:
+        containers = state.solr_results.get(svc.name, [])
+        per_container = [
+            {
+                "container": c.container,
+                "ok": c.ok,
+                "checked_at": c.checked_at,
+                "base_url": c.base_url,
+                "core": c.core,
+                "latency_ms": c.latency_ms,
+                "error": c.error,
+                "solr_version": c.solr_version,
+                "jvm_mem_used": c.jvm_mem_used,
+                "jvm_mem_max": c.jvm_mem_max,
+                "jvm_mem_used_pct": c.jvm_mem_used_pct,
+                "system_load": c.system_load,
+                "open_fds": c.open_fds,
+                "max_fds": c.max_fds,
+                "q_requests": c.q_requests,
+                "q_mean_rate": c.q_mean_rate,
+                "q_errors": c.q_errors,
+                "q_timeouts": c.q_timeouts,
+                "u_requests": c.u_requests,
+                "u_mean_rate": c.u_mean_rate,
+                "u_errors": c.u_errors,
+            }
+            for c in containers
+        ]
+        ok = [c for c in containers if c.ok]
+        def _avg(attr: str) -> float | None:
+            vals = [getattr(c, attr) for c in ok if getattr(c, attr) is not None]
+            return (sum(vals) / len(vals)) if vals else None
+        def _sum(attr: str) -> float | int | None:
+            vals = [getattr(c, attr) for c in ok if getattr(c, attr) is not None]
+            return sum(vals) if vals else None
+        summary = {
+            "container_count": len(containers),
+            "ok_count": len(ok),
+            "jvm_mem_used_pct_avg": _avg("jvm_mem_used_pct"),
+            "system_load_avg": _avg("system_load"),
+            "q_mean_rate_sum": _sum("q_mean_rate"),
+            "u_mean_rate_sum": _sum("u_mean_rate"),
+            "q_requests_max": max((c.q_requests for c in ok if c.q_requests is not None), default=None),
+            "u_requests_max": max((c.u_requests for c in ok if c.u_requests is not None), default=None),
+        }
+        out.append(
+            {
+                "service": svc.name,
+                "base_url": svc.base_url,
+                "core": svc.core,
+                "fronts": svc.fronts,
+                "rancher_enabled": svc.rancher is not None,
+                "summary": summary,
+                "containers": per_container,
+            }
+        )
+    return JSONResponse({"solr": out})
 
 
 @app.get("/api/neo4j")

@@ -2,6 +2,23 @@
 
 All notable changes to vfb-status are recorded here. The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.11.0] — 2026-06-05
+
+### Added
+
+- New `solr_services:` YAML block + Solr-specific probe. Each entry hits two admin endpoints per container:
+  - `/solr/<core>/admin/system?wt=json` for JVM memory (`used/free/total/max` bytes + `used%`), system load average, host memory, open/max file descriptors, and the running Solr version.
+  - `/solr/<core>/admin/mbeans?stats=true&key=/select&key=/update&compact=true` for cumulative `/select` and `/update` request counts plus mean rates.
+- Per-container probing via the same Rancher v1 API plumbing as caches / apps / Neo4j; falls back to LB-fronted probe if the API isn't configured.
+- New `solr_history` SQLite table (auto-migrated) — 23 metric columns per row plus `service`/`container`/`ts`/`ok`/`error`.
+- New **"Solr — load over time"** card section on the page, between Neo4j and Application services. Each card shows cluster summary (memory %, load avg, query rate, update rate, totals) plus a per-container breakdown table and four sparklines:
+  - JVM memory % (cluster avg)
+  - Δ query requests per check (cluster max)
+  - Δ update requests per check (cluster max)
+  - System load average (cluster avg)
+- New `GET /api/solr` endpoint returns `summary` + `containers[]` per service, mirroring `/api/neo4j` and `/api/cache`.
+- Two services seeded in the YAML: `SOLR (solr.virtualflybrain.org)` (service `1s103`, scale 1) and `SOLR — ServerONLY (1s263)` (scale 1). Single-container today but the path is ready when they're scaled out.
+
 ## [0.10.0] — 2026-06-04
 
 ### Added
@@ -233,6 +250,7 @@ Initial release. Self-contained Docker uptime tracker for public-facing Virtual 
 - Four subdomains (`nas0`, `iip3d`, `nblast`, `abd1-5.catmaid`) ship with `verify_tls: false` because the production cert SAN doesn't cover them. The servers are up; the cert provisioning is a separate problem.
 - Kubernetes nodes are intentionally not handled here — separate checks planned for a later release.
 
+[0.11.0]: https://github.com/VirtualFlyBrain/vfb-status/releases/tag/v0.11.0
 [0.10.0]: https://github.com/VirtualFlyBrain/vfb-status/releases/tag/v0.10.0
 [0.9.0]: https://github.com/VirtualFlyBrain/vfb-status/releases/tag/v0.9.0
 [0.8.2]: https://github.com/VirtualFlyBrain/vfb-status/releases/tag/v0.8.2
