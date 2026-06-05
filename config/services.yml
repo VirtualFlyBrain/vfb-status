@@ -170,11 +170,17 @@ cache_services:
       service_url: https://herd.virtualflybrain.org/v2-beta/projects/1a5/services/1s338
       container_port: 80
       container_path: /status
-
-# Not in cache_services: query-cache-server (1s322) is a SOLR cache, not an
-# owl_cache nginx. The existing SOLR entry in groups: already covers it; if
-# we want per-instance SOLR metrics later, that needs a different probe shape
-# against the Solr admin API.
+  - name: Query cache (query-preview.virtualflybrain.org)
+    # owl_cache 1.1.20 fronting queryserver (1s304). The rancher LB only
+    # routes /solr/* through `query-preview.virtualflybrain.org:8983`, so the
+    # LB-fronted /status fallback below 404s — that's fine, the per-container
+    # probe via the Rancher API hits the container's nginx on port 80 directly.
+    status_url: http://query-preview.virtualflybrain.org:8983/status
+    fronts: queryserver (query.virtualflybrain.org)
+    rancher:
+      service_url: https://herd.virtualflybrain.org/v2-beta/projects/1a5/services/1s322
+      container_port: 80
+      container_path: /status
 
 # Neo4j endpoints — verify both that the database is online AND that it has
 # data. Two-stage probe:

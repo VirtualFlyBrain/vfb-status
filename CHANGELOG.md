@@ -2,6 +2,12 @@
 
 All notable changes to vfb-status are recorded here. The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.11.2] — 2026-06-05
+
+### Added
+
+- `query-cache-server` (service `1s322`, `owl_cache:1.1.20`) added to `cache_services`. It's the owl_cache that fronts `queryserver` and is served by the LB at `http://query-preview.virtualflybrain.org:8983/solr/` (only `/solr/*` is routed by that LB binding, so the LB-fronted `/status` fallback 404s — the per-container probe via the Rancher API hits the container's nginx on port 80 directly and works the same as the other owl_cache entries).
+
 ## [0.11.1] — 2026-06-05
 
 ### Added
@@ -256,6 +262,7 @@ Initial release. Self-contained Docker uptime tracker for public-facing Virtual 
 - Four subdomains (`nas0`, `iip3d`, `nblast`, `abd1-5.catmaid`) ship with `verify_tls: false` because the production cert SAN doesn't cover them. The servers are up; the cert provisioning is a separate problem.
 - Kubernetes nodes are intentionally not handled here — separate checks planned for a later release.
 
+[0.11.2]: https://github.com/VirtualFlyBrain/vfb-status/releases/tag/v0.11.2
 [0.11.1]: https://github.com/VirtualFlyBrain/vfb-status/releases/tag/v0.11.1
 [0.11.0]: https://github.com/VirtualFlyBrain/vfb-status/releases/tag/v0.11.0
 [0.10.0]: https://github.com/VirtualFlyBrain/vfb-status/releases/tag/v0.10.0
