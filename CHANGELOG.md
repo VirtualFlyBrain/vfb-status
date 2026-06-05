@@ -2,6 +2,12 @@
 
 All notable changes to vfb-status are recorded here. The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.11.1] — 2026-06-05
+
+### Added
+
+- New `solr_services` entry: **Query Solr (`query.virtualflybrain.org`)**, backed by `queryserver` (service `1s304`). Sits behind a rancher LB on port 80 only (HTTP), hosts both `vfb_json` and `ontology` cores; we probe via the `ontology` core admin endpoints. Carries the bulk of VFB's Solr query traffic — at first probe: ~12.8 M cumulative `/select` requests, mean rate ~21/s, system load ~8 (vs ~2 on the public read endpoint).
+
 ## [0.11.0] — 2026-06-05
 
 ### Added
@@ -250,6 +256,7 @@ Initial release. Self-contained Docker uptime tracker for public-facing Virtual 
 - Four subdomains (`nas0`, `iip3d`, `nblast`, `abd1-5.catmaid`) ship with `verify_tls: false` because the production cert SAN doesn't cover them. The servers are up; the cert provisioning is a separate problem.
 - Kubernetes nodes are intentionally not handled here — separate checks planned for a later release.
 
+[0.11.1]: https://github.com/VirtualFlyBrain/vfb-status/releases/tag/v0.11.1
 [0.11.0]: https://github.com/VirtualFlyBrain/vfb-status/releases/tag/v0.11.0
 [0.10.0]: https://github.com/VirtualFlyBrain/vfb-status/releases/tag/v0.10.0
 [0.9.0]: https://github.com/VirtualFlyBrain/vfb-status/releases/tag/v0.9.0

@@ -257,6 +257,18 @@ solr_services:
       service_url: https://herd.virtualflybrain.org/v2-beta/projects/1a5/services/1s263
       container_port: 8983
       container_scheme: http
+  - name: Query Solr (query.virtualflybrain.org)
+    # The rancher LB binds query.virtualflybrain.org on port 80 only (HTTP)
+    # against queryserver (1s304); /solr/ paths route through to Solr at
+    # target_port 8983. Same image as the public SOLR but a separate service
+    # backing vfb_json + ontology cores from the query front end.
+    base_url: http://query.virtualflybrain.org
+    core: ontology
+    fronts: queryserver (1s304) — vfb_json + ontology
+    rancher:
+      service_url: https://herd.virtualflybrain.org/v2-beta/projects/1a5/services/1s304
+      container_port: 8983
+      container_scheme: http
 
 # Application services exposing their own /status JSON (shape: vfbquery, ...).
 # Probed on the same schedule as everything else; metrics stored in
