@@ -2,6 +2,21 @@
 
 All notable changes to vfb-status are recorded here. The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.11.4] — 2026-06-05
+
+### Fixed
+
+- **Query Solr core changed from `ontology` to `vfb_json`.** I'd been fooled by the rancher LB's path-prefix routing: hitting `http://query.virtualflybrain.org/solr/ontology/...` was actually being routed to the public ontology Solr (`solr-vfb-service` 1s103), not to queryserver (1s304). queryserver only hosts `vfb_json`; ontology doesn't exist on it. The 12.8 M `/select` request count I'd previously attributed to Query Solr was really the public Solr's traffic, double-counted onto the wrong card. With the correct core, Query Solr now reports its real numbers (~3 006 cumulative requests, 0.005/s — matching Preview Solr 1s322 since they share state via the LB).
+
+### Topology after this release
+
+| Card | Hostname + path | Routes to | Core |
+| --- | --- | --- | --- |
+| SOLR | `solr.virtualflybrain.org` `/solr/ontology/` | 1s103 solr-vfb-service | ontology |
+| SOLR — ServerONLY (1s263) | (replica) | 1s263 | ontology |
+| Query Solr | `query.virtualflybrain.org` `/solr/vfb_json/` | 1s304 queryserver | vfb_json |
+| Preview Solr | `query-preview.virtualflybrain.org:8983` `/solr/vfb_json/` | 1s322 query-cache-server | vfb_json |
+
 ## [0.11.3] — 2026-06-05
 
 ### Fixed
@@ -272,6 +287,7 @@ Initial release. Self-contained Docker uptime tracker for public-facing Virtual 
 - Four subdomains (`nas0`, `iip3d`, `nblast`, `abd1-5.catmaid`) ship with `verify_tls: false` because the production cert SAN doesn't cover them. The servers are up; the cert provisioning is a separate problem.
 - Kubernetes nodes are intentionally not handled here — separate checks planned for a later release.
 
+[0.11.4]: https://github.com/VirtualFlyBrain/vfb-status/releases/tag/v0.11.4
 [0.11.3]: https://github.com/VirtualFlyBrain/vfb-status/releases/tag/v0.11.3
 [0.11.2]: https://github.com/VirtualFlyBrain/vfb-status/releases/tag/v0.11.2
 [0.11.1]: https://github.com/VirtualFlyBrain/vfb-status/releases/tag/v0.11.1
