@@ -170,17 +170,9 @@ cache_services:
       service_url: https://herd.virtualflybrain.org/v2-beta/projects/1a5/services/1s338
       container_port: 80
       container_path: /status
-  - name: Query cache (query-preview.virtualflybrain.org)
-    # owl_cache 1.1.20 fronting queryserver (1s304). The rancher LB only
-    # routes /solr/* through `query-preview.virtualflybrain.org:8983`, so the
-    # LB-fronted /status fallback below 404s — that's fine, the per-container
-    # probe via the Rancher API hits the container's nginx on port 80 directly.
-    status_url: http://query-preview.virtualflybrain.org:8983/status
-    fronts: queryserver (query.virtualflybrain.org)
-    rancher:
-      service_url: https://herd.virtualflybrain.org/v2-beta/projects/1a5/services/1s322
-      container_port: 80
-      container_path: /status
+# Note: query-cache-server (1s322) lives under solr_services below — the
+# service name is misleading (legacy from an earlier owl_cache layer); it
+# now runs Solr directly hosting the vfb_json core.
 
 # Neo4j endpoints — verify both that the database is online AND that it has
 # data. Two-stage probe:
@@ -275,6 +267,21 @@ solr_services:
       service_url: https://herd.virtualflybrain.org/v2-beta/projects/1a5/services/1s304
       container_port: 8983
       container_scheme: http
+  - name: Preview Solr (query-preview.virtualflybrain.org)
+    # query-cache-server (1s322) — name is legacy; this is a Solr instance
+    # hosting the vfb_json core, NOT an owl_cache (despite what the old
+    # docker-compose says). Lives in the vfb-development stack so a
+    # per-container probe via the Rancher API at 10.42.x.x:8983 would
+    # ConnectError across stacks — LB probe only.
+    base_url: http://query-preview.virtualflybrain.org:8983
+    core: vfb_json
+    fronts: queryserver replica / vfb_json preview (1s322)
+    # no rancher: block — cross-stack overlay isolation blocks the direct
+    # path. If 1s322 is ever moved into vfb-services-live, add:
+    #   rancher:
+    #     service_url: https://herd.virtualflybrain.org/v2-beta/projects/1a5/services/1s322
+    #     container_port: 8983
+    #     container_scheme: http
 
 # Application services exposing their own /status JSON (shape: vfbquery, ...).
 # Probed on the same schedule as everything else; metrics stored in
