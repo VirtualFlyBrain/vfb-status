@@ -267,8 +267,10 @@
               {%- set _short = r.name.split('.')[0].lower() -%}
               {%- set rh = cluster_hosts_by_short.get(_short) -%}
             {% endif %}
+            {%- set _row_status = row.display_status or r.status -%}
+            {%- set _row_err = row.display_error if 'display_error' in row else r.error -%}
             <div class="svc">
-              <div class="svc-status"><span class="pill {{ r.status }}">{{ r.status }}</span></div>
+              <div class="svc-status"><span class="pill {{ _row_status }}">{{ _row_status }}</span></div>
               <div class="svc-name">
                 <a href="{{ r.url }}" rel="noopener noreferrer" target="_blank">{{ r.name }}</a>
                 {% if rh %}
@@ -278,7 +280,7 @@
                     {% if rh.is_dns_ingress %}<span class="badge badge-dns" title="virtualflybrain.org DNS A-record points at this host's agentIpAddress ({{ rh.agent_ip }})">DNS</span>{% endif %}
                   </span>
                 {% endif %}
-                {% if r.error %}<div class="svc-err">{{ r.error }}</div>{% endif %}
+                {% if _row_err %}<div class="svc-err">{{ _row_err }}</div>{% endif %}
               </div>
               <div class="svc-meta">
                 {{ r.http_status if r.http_status is not none else "—" }}
@@ -818,6 +820,7 @@
       <a href="/api/solr">/api/solr</a> ·
       <a href="/api/cluster">/api/cluster</a> ·
       <a href="/healthz">/healthz</a> ·
+      <a href="/api/version">/api/version</a> ·
       <a href="https://github.com/VirtualFlyBrain/vfb-status">source</a>
     </footer>
   </div>

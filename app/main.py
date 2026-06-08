@@ -47,7 +47,13 @@ log = logging.getLogger("vfb-status")
 CONFIG_PATH = Path(os.environ.get("CONFIG_PATH", "config/services.yml"))
 STATE_FILE = Path(os.environ.get("STATE_FILE", "")) if os.environ.get("STATE_FILE") else None
 CHECK_INTERVAL_SECONDS = int(os.environ.get("CHECK_INTERVAL_SECONDS", str(60 * 60)))
-USER_AGENT = "vfb-status/1.0 (+https://github.com/VirtualFlyBrain/vfb-status)"
+VERSION = "0.11.8"
+USER_AGENT = f"vfb-status/{VERSION} (+https://github.com/VirtualFlyBrain/vfb-status)"
+
+# Maximum seconds one run_checks() cycle may take before we abandon stragglers
+# (without this a single hung sub-probe blocks the whole schedule until the
+# next coalesce, which is what stuck the deployment on 2026-05-29).
+RUN_CHECKS_TIMEOUT = float(os.environ.get("RUN_CHECKS_TIMEOUT", "90"))
 
 # History storage on the mounted volume. On by default at /data/history.db
 # so a bare `docker run` with a `-v` mount picks up history without extra
@@ -621,6 +627,10 @@ async def probe(client_verify: httpx.AsyncClient, client_no_verify: httpx.AsyncC
             checked_at=started.isoformat(timespec="seconds"),
         )
     except httpx.TimeoutException:
+        # httpx only logs successful responses; explicit log here so failed
+        # probes are visible in docker logs (otherwise the only signal is
+        # the row in /api/status).
+        log.warning("probe %s -> timeout after %ss (%s)", svc.name, svc.timeout, svc.url)
         return CheckResult(
             name=svc.name,
             group=svc.group,
@@ -630,6 +640,7 @@ async def probe(client_verify: httpx.AsyncClient, client_no_verify: httpx.AsyncC
             checked_at=started.isoformat(timespec="seconds"),
         )
     except Exception as exc:  # noqa: BLE001 — top-level safety
+        log.warning("probe %s -> %s: %s (%s)", svc.name, type(exc).__name__, exc, svc.url)
         return CheckResult(
             name=svc.name,
             group=svc.group,
@@ -700,14 +711,18 @@ async def _fetch_cache_status(
             headers={"User-Agent": USER_AGENT, "Accept": "application/json"},
         )
         if resp.status_code != 200:
+            log.warning("cache probe %s -> HTTP %d", url, resp.status_code)
             return False, None, f"HTTP {resp.status_code}"
         try:
             return True, resp.json(), None
         except Exception as exc:  # noqa: BLE001
+            log.warning("cache probe %s -> invalid JSON: %s", url, exc)
             return False, None, f"invalid JSON: {exc}"
     except httpx.TimeoutException:
+        log.warning("cache probe %s -> timeout after %ss", url, timeout)
         return False, None, f"timeout after {timeout}s"
     except Exception as exc:  # noqa: BLE001
+        log.warning("cache probe %s -> %s: %s", url, type(exc).__name__, exc)
         return False, None, f"{type(exc).__name__}: {exc}"
 
 
@@ -896,14 +911,18 @@ async def _fetch_app_status(
             headers={"User-Agent": USER_AGENT, "Accept": "application/json"},
         )
         if resp.status_code != 200:
+            log.warning("app probe %s -> HTTP %d", url, resp.status_code)
             return False, None, f"HTTP {resp.status_code}"
         try:
             return True, resp.json(), None
         except Exception as exc:  # noqa: BLE001
+            log.warning("app probe %s -> invalid JSON: %s", url, exc)
             return False, None, f"invalid JSON: {exc}"
     except httpx.TimeoutException:
+        log.warning("app probe %s -> timeout after %ss", url, timeout)
         return False, None, f"timeout after {timeout}s"
     except Exception as exc:  # noqa: BLE001
+        log.warning("app probe %s -> %s: %s", url, type(exc).__name__, exc)
         return False, None, f"{type(exc).__name__}: {exc}"
 
 
@@ -1017,10 +1036,13 @@ async def _probe_neo4j_at(
             try:
                 return resp.status_code, resp.json(), None
             except Exception as exc:  # noqa: BLE001
+                log.warning("neo4j probe %s -> non-JSON: %s", url, exc)
                 return resp.status_code, None, f"non-JSON response: {exc}"
         except httpx.TimeoutException:
+            log.warning("neo4j probe %s -> timeout after %ss", url, svc.timeout)
             return 0, None, f"timeout after {svc.timeout}s"
         except Exception as exc:  # noqa: BLE001
+            log.warning("neo4j probe %s -> %s: %s", url, type(exc).__name__, exc)
             return 0, None, f"{type(exc).__name__}: {exc}"
 
     # 1) DB status from system db
@@ -1230,14 +1252,18 @@ async def _probe_solr_at(
             resp = await client.get(url, timeout=svc.timeout, headers=headers,
                                     follow_redirects=True)
             if resp.status_code != 200:
+                log.warning("solr probe %s -> HTTP %d", url, resp.status_code)
                 return False, None, f"HTTP {resp.status_code}"
             try:
                 return True, resp.json(), None
             except Exception as exc:  # noqa: BLE001
+                log.warning("solr probe %s -> non-JSON: %s", url, exc)
                 return False, None, f"non-JSON: {exc}"
         except httpx.TimeoutException:
+            log.warning("solr probe %s -> timeout after %ss", url, svc.timeout)
             return False, None, f"timeout after {svc.timeout}s"
         except Exception as exc:  # noqa: BLE001
+            log.warning("solr probe %s -> %s: %s", url, type(exc).__name__, exc)
             return False, None, f"{type(exc).__name__}: {exc}"
 
     sys_ok, sys_body, sys_err = await _get(sys_url)
@@ -2468,14 +2494,28 @@ class State:
                     len(self.cache_services),
                     len(self.app_services),
                 )
-                results, cache_results, app_results, neo4j_results, solr_results, cluster_result = await asyncio.gather(
-                    probe_all(self.services),
-                    probe_all_caches(self.cache_services),
-                    probe_all_apps(self.app_services),
-                    probe_all_neo4j(self.neo4j_services),
-                    probe_all_solr(self.solr_services),
-                    probe_rancher_cluster(),
-                )
+                try:
+                    results, cache_results, app_results, neo4j_results, solr_results, cluster_result = await asyncio.wait_for(
+                        asyncio.gather(
+                            probe_all(self.services),
+                            probe_all_caches(self.cache_services),
+                            probe_all_apps(self.app_services),
+                            probe_all_neo4j(self.neo4j_services),
+                            probe_all_solr(self.solr_services),
+                            probe_rancher_cluster(),
+                        ),
+                        timeout=RUN_CHECKS_TIMEOUT,
+                    )
+                except asyncio.TimeoutError:
+                    # Don't let a hung sub-probe wedge the scheduler forever
+                    # (the 2026-05-29 freeze was exactly this). Skip this
+                    # cycle; next interval will try again.
+                    log.error(
+                        "run_checks exceeded RUN_CHECKS_TIMEOUT (%.0fs); "
+                        "abandoning this cycle to avoid stalling the scheduler",
+                        RUN_CHECKS_TIMEOUT,
+                    )
+                    return
                 for r in results:
                     self.results[r.name] = r
                 self.cache_results = {}
@@ -2893,6 +2933,11 @@ def _override_row_with_cluster(
     kept for history + the meta column but no longer drives the pill — a
     slow or unreachable cowcheck endpoint shouldn't paint the host red when
     Rancher itself reports it active.
+
+    Sets row['display_status']/'display_error' WITHOUT mutating the underlying
+    CheckResult — the previous in-place mutation accumulated the prefix +
+    suffix on every page render. The template should prefer these over
+    r.status / r.error for the rancher rows.
     """
     if not svc.group.startswith("Rancher servers"):
         return row
@@ -2902,13 +2947,14 @@ def _override_row_with_cluster(
         return row
     r = row["result"]
     if host.state == "active":
-        # Override pill to up; preserve original error in a note for context.
-        r.status = "up"
-        if r.error:
-            r.error = f"cowcheck :5050 — {r.error} (Rancher says host active)"
+        row["display_status"] = "up"
+        row["display_error"] = (
+            f"cowcheck :5050 — {r.error} (Rancher says host active)"
+            if r.error else None
+        )
     else:
-        r.status = "down"
-        r.error = f"Rancher state: {host.state}"
+        row["display_status"] = "down"
+        row["display_error"] = f"Rancher state: {host.state}"
     return row
 
 
@@ -2927,10 +2973,14 @@ async def index(request: Request) -> HTMLResponse:
         grouped.setdefault(svc.group, []).append(row)
     total = len(state.services)
     # Recompute from the (possibly cluster-overridden) rows so the headline
-    # numbers match the pills shown in the rancher_servers section.
+    # numbers match the pills shown in the rancher_servers section. Use
+    # display_status when the row has one (override path), otherwise the
+    # underlying CheckResult.status.
     all_rows = [r for rows in grouped.values() for r in rows]
-    up = sum(1 for r in all_rows if r["result"].status == "up")
-    down = sum(1 for r in all_rows if r["result"].status == "down")
+    def _row_status(r: dict[str, Any]) -> str:
+        return r.get("display_status") or r["result"].status
+    up = sum(1 for r in all_rows if _row_status(r) == "up")
+    down = sum(1 for r in all_rows if _row_status(r) == "down")
     cache_cards = [_cache_card(state, s) for s in state.cache_services]
     app_cards = [_app_card(state, s) for s in state.app_services]
     neo4j_cards = [_neo4j_card(state, s) for s in state.neo4j_services]
@@ -3004,6 +3054,23 @@ async def api_status(request: Request) -> JSONResponse:
 @app.get("/healthz")
 async def healthz() -> dict[str, str]:
     return {"status": "ok"}
+
+
+@app.get("/api/version")
+async def api_version(request: Request) -> JSONResponse:
+    """Reports the running vfb-status build + the timestamp of the last
+    successful probe cycle. Useful for confirming an upgrade actually
+    landed when the rest of the page looks stale.
+    """
+    state: State = request.app.state.state
+    return JSONResponse(
+        {
+            "version": VERSION,
+            "last_run": state.last_run,
+            "run_checks_timeout_s": RUN_CHECKS_TIMEOUT,
+            "history_enabled": state.history.enabled,
+        }
+    )
 
 
 @app.post("/refresh")

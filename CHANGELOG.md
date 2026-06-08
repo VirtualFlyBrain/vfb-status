@@ -12,6 +12,27 @@ All notable changes to vfb-status are recorded here. The format is loosely based
 - A container failing writes is marked not-ok (so it counts against uptime and surfaces in the cluster-degraded table) and the Solr card shows a `writes failing ⚠` badge. New fields `u_server_errors`, `write_ok`, `write_detail` on `/api/solr`.
 - `solr_history.u_server_errors` column, added to existing databases via the standard `_migrate()` ADD COLUMN path.
 
+## [0.11.8] — 2026-06-08
+
+### Added
+
+- **Failed probes now log a WARNING line** in every probe path (regular HTTP, cache /status, app /status, neo4j Cypher, solr admin). Previously, httpx only logged successful responses (`INFO HTTP Request: ...`), so `ConnectError` / `TimeoutException` / HTTP 4xx-5xx outcomes went silently into `CheckResult.error` and never appeared in `docker logs vfb-status`. This made the 2-of-8 rancher-server symptom look like "only 2 are being probed" when actually all 8 were attempted; only the 2 successes generated log lines. The new lines are one per failed probe per cycle (low volume, easy to grep `WARNING probe`).
+
+## [0.11.7] — 2026-06-08
+
+### Fixed
+
+- **Error-string accumulation bug** on rancher_servers rows. The v0.8.1 cluster-API override was mutating `CheckResult.error` in place, and because the same `CheckResult` object is shared across the lifetime of `State.results`, every `/` request stacked another `cowcheck :5050 — ` prefix and `(Rancher says host active)` suffix onto the same string. After 4 page renders you'd see four copies of each. Fixed by setting `display_status` / `display_error` on the per-row dict instead of mutating the shared CheckResult; template reads those when present.
+
+### Added
+
+- **`GET /api/version`** endpoint returning `{version, last_run, run_checks_timeout_s, history_enabled}`. Useful for confirming an upgrade actually landed when the rest of the page looks stale (the 2026-05-29 freeze took two days to diagnose because there was no way to tell what was running).
+- Module-level `VERSION` constant baked into the User-Agent of probe requests so upstream services can also see what's calling them.
+
+### Changed
+
+- **`run_checks()` is now timeout-bounded** via `asyncio.wait_for` with a default `RUN_CHECKS_TIMEOUT=90s`. The 2026-05-29 freeze was a hung sub-probe inside `asyncio.gather` that pinned the scheduler indefinitely (max_instances=1 + coalesce=True meant subsequent ticks were silently dropped). Now if any cycle exceeds 90s the whole cycle is abandoned with a loud ERROR log; the next interval tries again from a clean slate.
+
 ## [0.11.6] — 2026-06-08
 
 ### Fixed
@@ -310,6 +331,8 @@ Initial release. Self-contained Docker uptime tracker for public-facing Virtual 
 - Four subdomains (`nas0`, `iip3d`, `nblast`, `abd1-5.catmaid`) ship with `verify_tls: false` because the production cert SAN doesn't cover them. The servers are up; the cert provisioning is a separate problem.
 - Kubernetes nodes are intentionally not handled here — separate checks planned for a later release.
 
+[0.11.8]: https://github.com/VirtualFlyBrain/vfb-status/releases/tag/v0.11.8
+[0.11.7]: https://github.com/VirtualFlyBrain/vfb-status/releases/tag/v0.11.7
 [0.11.6]: https://github.com/VirtualFlyBrain/vfb-status/releases/tag/v0.11.6
 [0.11.5]: https://github.com/VirtualFlyBrain/vfb-status/releases/tag/v0.11.5
 [0.11.4]: https://github.com/VirtualFlyBrain/vfb-status/releases/tag/v0.11.4
