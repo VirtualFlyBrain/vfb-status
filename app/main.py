@@ -212,6 +212,13 @@ class SolrServiceSpec:
     fronts: str | None = None
     timeout: float = 12.0
     verify_tls: bool = True
+    # Active write-liveness probe. When true, each check issues an empty
+    # commit to /update — the only request that reliably forces Lucene to
+    # call IndexWriter.ensureOpen(), so it returns 500 the moment the writer
+    # is closed (e.g. an EIO on write.lock from a soft NFS mount dropping).
+    # It is a write request, so it's OFF by default and must be opted into
+    # per service in services.yml. An empty commit adds/changes no documents.
+    write_probe: bool = False
     rancher: "RancherEnumeration | None" = None
 
 
@@ -249,6 +256,17 @@ class SolrCheck:
     u_requests: int | None = None
     u_mean_rate: float | None = None
     u_errors: int | None = None
+    # 5xx-only update errors (UPDATE./update.serverErrors.count). A closed
+    # IndexWriter turns every /update into an HTTP 500, so this counter
+    # climbing between checks is the signal that writes are failing while
+    # reads (and /admin/system) stay green. Tracked separately from u_errors
+    # so a burst of client 4xx can't masquerade as a write outage.
+    u_server_errors: int | None = None
+    # Write-path verdict. None = not assessed this cycle; True = writes ok;
+    # False = writes failing (set by the active probe or by a rising
+    # serverErrors delta). When False the check is also marked not-ok.
+    write_ok: bool | None = None
+    write_detail: str | None = None
 
 
 @dataclass
@@ -440,6 +458,7 @@ def load_solr_services(path: Path) -> list[SolrServiceSpec]:
                 fronts=svc.get("fronts"),
                 timeout=float(svc.get("timeout", 12.0)),
                 verify_tls=bool(svc.get("verify_tls", True)),
+                write_probe=bool(svc.get("write_probe", False)),
                 rancher=ranch,
             )
         )
@@ -1151,6 +1170,42 @@ async def probe_all_neo4j(services: Iterable[Neo4jServiceSpec]) -> list[Neo4jChe
 # ----- Solr probing ---------------------------------------------------------
 
 
+async def _solr_write_probe(
+    client: httpx.AsyncClient,
+    base_url: str,
+    svc: SolrServiceSpec,
+    headers: dict[str, str],
+) -> tuple[bool, str | None]:
+    """Issue an empty commit against /update and report whether the write
+    path is alive. Returns (ok, detail).
+
+    An empty commit (`{"commit":{}}`) adds, deletes, and changes nothing, but
+    it forces DirectUpdateHandler2 → IndexWriter.ensureOpen(). When the writer
+    has been closed by a storage fault (the classic case: an EIO on
+    write.lock when a soft NFS mount drops), Solr answers 500 with
+    "this IndexWriter is closed". A healthy core answers 200. This is the only
+    probe that catches the failure mode where reads stay green but writes are
+    dead, which a plain /select can't see.
+    """
+    url = f"{base_url}/solr/{svc.core}/update?commit=true"
+    try:
+        resp = await client.post(
+            url, timeout=svc.timeout,
+            headers={**headers, "Content-Type": "application/json"},
+            content=b'{"commit":{}}', follow_redirects=True,
+        )
+    except httpx.TimeoutException:
+        return False, f"timeout after {svc.timeout}s"
+    except Exception as exc:  # noqa: BLE001
+        return False, f"{type(exc).__name__}: {exc}"
+    if resp.status_code == 200:
+        return True, None
+    detail = f"HTTP {resp.status_code}"
+    if "IndexWriter is closed" in resp.text:
+        detail += " (IndexWriter closed — check storage/NFS mount)"
+    return False, detail
+
+
 async def _probe_solr_at(
     client: httpx.AsyncClient,
     svc: SolrServiceSpec,
@@ -1199,7 +1254,7 @@ async def _probe_solr_at(
 
     mb_ok, mb_body, mb_err = await _get(mbeans_url)
     q_requests = q_mean = q_errors = q_timeouts = q_total = None
-    u_requests = u_mean = u_errors = None
+    u_requests = u_mean = u_errors = u_server_errors = None
     if mb_ok and mb_body is not None:
         beans = mb_body.get("solr-mbeans") or []
         # beans alternates [cat_name, handlers_dict, ...]
@@ -1220,14 +1275,31 @@ async def _probe_solr_at(
                 elif cat == "UPDATE" and hname == "/update":
                     u_requests = _to_int(stats.get("UPDATE./update.requests"))
                     u_errors = _to_int(stats.get("UPDATE./update.errors.count"))
+                    u_server_errors = _to_int(stats.get("UPDATE./update.serverErrors.count"))
                     mr = stats.get("UPDATE./update.requestTimes.meanRate")
                     u_mean = float(mr) if mr is not None else None
 
+    # Active write-liveness probe (opt-in). An empty commit is the only
+    # request that reliably exercises IndexWriter.ensureOpen(); a closed
+    # writer answers it with HTTP 500 while /select and /admin/system stay
+    # green. Skipped unless write_probe is set on the service.
+    write_ok: bool | None = None
+    write_detail: str | None = None
+    if svc.write_probe:
+        write_ok, write_detail = await _solr_write_probe(client, base_url, svc, headers)
+
     latency_ms = int((datetime.now(timezone.utc) - started).total_seconds() * 1000)
+    err = (f"mbeans: {mb_err}" if (not mb_ok and mb_err) else None)
+    ok = True
+    if write_ok is False:
+        ok = False
+        wmsg = f"write probe failed: {write_detail}"
+        err = f"{err} | {wmsg}" if err else wmsg
     return SolrCheck(
-        name=svc.name, base_url=base_url, core=svc.core, ok=True,
+        name=svc.name, base_url=base_url, core=svc.core, ok=ok,
         checked_at=iso_started, container=container, latency_ms=latency_ms,
-        error=(f"mbeans: {mb_err}" if (not mb_ok and mb_err) else None),
+        error=err,
+        write_ok=write_ok, write_detail=write_detail,
         jvm_mem_used=_to_int(mem_raw.get("used")),
         jvm_mem_free=_to_int(mem_raw.get("free")),
         jvm_mem_total=_to_int(mem_raw.get("total")),
@@ -1247,6 +1319,7 @@ async def _probe_solr_at(
         q_requests=q_requests, q_mean_rate=q_mean, q_errors=q_errors,
         q_timeouts=q_timeouts, q_total_time_ns=q_total,
         u_requests=u_requests, u_mean_rate=u_mean, u_errors=u_errors,
+        u_server_errors=u_server_errors,
     )
 
 
@@ -1614,7 +1687,8 @@ class History:
         q_total_time_ns INTEGER,
         u_requests INTEGER,
         u_mean_rate REAL,
-        u_errors INTEGER
+        u_errors INTEGER,
+        u_server_errors INTEGER
     );
     CREATE INDEX IF NOT EXISTS idx_solr_service_ts ON solr_history (service, ts);
     CREATE INDEX IF NOT EXISTS idx_solr_service_container_ts ON solr_history (service, container, ts);
@@ -1731,6 +1805,37 @@ class History:
             "CREATE INDEX IF NOT EXISTS idx_neo4j_service_container_ts "
             "ON neo4j_history (service, container, ts)"
         )
+        # solr_history.u_server_errors (added in v0.12.0 for write-health)
+        solr_cols = {r[1] for r in self._conn.execute("PRAGMA table_info(solr_history)")}
+        if solr_cols and "u_server_errors" not in solr_cols:
+            self._conn.execute("ALTER TABLE solr_history ADD COLUMN u_server_errors INTEGER")
+            log.info("history: added u_server_errors column to solr_history")
+
+    def last_solr_server_errors(self, service: str, container: str | None) -> int | None:
+        """Most recent stored UPDATE serverErrors count for one (service,
+        container), or None if unknown. Used to compute the per-check delta
+        that flags a write outage. Returns None when history is disabled so
+        the caller treats it as "no baseline yet" rather than zero.
+        """
+        if self._conn is None:
+            return None
+        if container is None:
+            row = self._conn.execute(
+                "SELECT u_server_errors FROM solr_history "
+                "WHERE service = ? AND container IS NULL "
+                "ORDER BY ts DESC LIMIT 1",
+                (service,),
+            ).fetchone()
+        else:
+            row = self._conn.execute(
+                "SELECT u_server_errors FROM solr_history "
+                "WHERE service = ? AND container = ? "
+                "ORDER BY ts DESC LIMIT 1",
+                (service, container),
+            ).fetchone()
+        if row is None or row[0] is None:
+            return None
+        return int(row[0])
 
     def record(self, results: Iterable[CheckResult]) -> None:
         if self._conn is None:
@@ -1800,6 +1905,7 @@ class History:
                 r.host_mem_total, r.host_mem_free, r.solr_version,
                 r.q_requests, r.q_mean_rate, r.q_errors, r.q_timeouts,
                 r.q_total_time_ns, r.u_requests, r.u_mean_rate, r.u_errors,
+                r.u_server_errors,
             )
             for r in results
         ]
@@ -1813,8 +1919,8 @@ class History:
                 " jvm_mem_used_pct, system_load, open_fds, max_fds, "
                 " host_mem_total, host_mem_free, solr_version, "
                 " q_requests, q_mean_rate, q_errors, q_timeouts, q_total_time_ns, "
-                " u_requests, u_mean_rate, u_errors) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                " u_requests, u_mean_rate, u_errors, u_server_errors) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 rows,
             )
             cur.execute("COMMIT")
@@ -2384,6 +2490,35 @@ class State:
                 self.solr_results = {}
                 for sr in solr_results:
                     self.solr_results.setdefault(sr.name, []).append(sr)
+                # Passive write-health detector (read-only). A closed
+                # IndexWriter turns every /update into an HTTP 500, so the
+                # UPDATE serverErrors counter climbs while /select and
+                # /admin/system stay green — invisible to the liveness probe.
+                # Compare each container's counter against its previous stored
+                # value; a rise means writes are failing right now. Computed
+                # before record_solr() so this cycle's value becomes the next
+                # baseline. Only 5xx are counted, so client 4xx can't trip it.
+                # The active write_probe (opt-in) is more direct; this catches
+                # the same failure with zero writes against prod.
+                if self.history.enabled:
+                    for sr in solr_results:
+                        if sr.write_ok is False or sr.u_server_errors is None:
+                            continue
+                        baseline = self.history.last_solr_server_errors(sr.name, sr.container)
+                        if baseline is not None and sr.u_server_errors > baseline:
+                            delta = sr.u_server_errors - baseline
+                            sr.write_ok = False
+                            sr.write_detail = (
+                                f"{delta} new update 5xx since last check "
+                                "(IndexWriter likely closed — reads ok, writes failing; "
+                                "check storage/NFS mount)"
+                            )
+                            sr.ok = False
+                            sr.error = (
+                                f"{sr.error} | {sr.write_detail}" if sr.error else sr.write_detail
+                            )
+                        elif sr.write_ok is None:
+                            sr.write_ok = True
                 self.cluster_result = cluster_result
                 self.last_run = datetime.now(timezone.utc).isoformat(timespec="seconds")
                 self.persist()
@@ -2625,6 +2760,11 @@ def _solr_card(state: State, svc: SolrServiceSpec) -> dict[str, Any]:
         "u_mean_rate_sum": (sum(c.u_mean_rate for c in ok_containers if c.u_mean_rate is not None)
                              if any(c.u_mean_rate is not None for c in ok_containers) else None),
         "first_err": next((c.error for c in containers if not c.ok and c.error), None),
+        # Write-path rollup: how many containers are failing writes, and the
+        # first explanation, so the card can flag a write outage even though
+        # /select stays green.
+        "write_failing": sum(1 for c in containers if c.write_ok is False),
+        "write_detail": next((c.write_detail for c in containers if c.write_ok is False and c.write_detail), None),
     }
     series = state.history.solr_series(
         svc.name, _cache_chart_window_seconds(), max_points=120
@@ -3030,6 +3170,9 @@ async def api_solr(request: Request) -> JSONResponse:
                 "u_requests": c.u_requests,
                 "u_mean_rate": c.u_mean_rate,
                 "u_errors": c.u_errors,
+                "u_server_errors": c.u_server_errors,
+                "write_ok": c.write_ok,
+                "write_detail": c.write_detail,
             }
             for c in containers
         ]
