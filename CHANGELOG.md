@@ -12,6 +12,12 @@ All notable changes to vfb-status are recorded here. The format is loosely based
 - A container failing writes is marked not-ok (so it counts against uptime and surfaces in the cluster-degraded table) and the Solr card shows a `writes failing ⚠` badge. New fields `u_server_errors`, `write_ok`, `write_detail` on `/api/solr`.
 - `solr_history.u_server_errors` column, added to existing databases via the standard `_migrate()` ADD COLUMN path.
 
+## [0.11.6] — 2026-06-08
+
+### Fixed
+
+- `vfbquerycache.virtualflybrain.org` is a Solr server (`queryserver-vfbquery` 1s348, image `virtualflybrain/vfb-solr`), not an owl_cache — exact same naming trap as `query-cache-server` (1s322) was in v0.11.3. Removed the v0.11.5 entry from `cache_services` and added `VFBquery Solr (vfbquerycache.virtualflybrain.org)` to `solr_services` with `core: vfb_json` and per-container probing via Rancher API (service 1s348, container_port 8983, scheme http). Live verification: 1.2% JVM mem, load 2.4, 123 cumulative `/select` requests + 116 `/update` (the only Solr of the four that takes writes), Solr 8.11.4.
+
 ## [0.11.5] — 2026-06-08
 
 ### Changed
@@ -304,6 +310,7 @@ Initial release. Self-contained Docker uptime tracker for public-facing Virtual 
 - Four subdomains (`nas0`, `iip3d`, `nblast`, `abd1-5.catmaid`) ship with `verify_tls: false` because the production cert SAN doesn't cover them. The servers are up; the cert provisioning is a separate problem.
 - Kubernetes nodes are intentionally not handled here — separate checks planned for a later release.
 
+[0.11.6]: https://github.com/VirtualFlyBrain/vfb-status/releases/tag/v0.11.6
 [0.11.5]: https://github.com/VirtualFlyBrain/vfb-status/releases/tag/v0.11.5
 [0.11.4]: https://github.com/VirtualFlyBrain/vfb-status/releases/tag/v0.11.4
 [0.11.3]: https://github.com/VirtualFlyBrain/vfb-status/releases/tag/v0.11.3

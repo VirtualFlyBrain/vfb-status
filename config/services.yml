@@ -170,18 +170,10 @@ cache_services:
       service_url: https://herd.virtualflybrain.org/v2-beta/projects/1a5/services/1s338
       container_port: 80
       container_path: /status
-  - name: VFBquery cache (vfbquerycache.virtualflybrain.org)
-    # Cache in front of vfbquery. As of 2026-06-05 the public hostname
-    # doesn't have an LB rule in RancherServices/vfb-services-live and
-    # falls through to the Hugo catch-all, so the LB-fronted /status
-    # probe below will 404 until either the LB rule lands or this is
-    # rewired to the rancher: per-container path.
-    status_url: http://vfbquerycache.virtualflybrain.org/status
-    fronts: vfbquery cache
-    # rancher:
-    #   service_url: https://herd.virtualflybrain.org/v2-beta/projects/1a5/services/<ID>
-    #   container_port: 80
-    #   container_path: /status
+  # Note: vfbquerycache.virtualflybrain.org (host LB rule added 2026-06-08)
+  # is a Solr server (queryserver-vfbquery, image virtualflybrain/vfb-solr,
+  # 1s348). Moved to solr_services below — name is misleading, same trap
+  # as query-cache-server / 1s322 was in v0.11.3.
 # Note: query-cache-server (1s322) lives under solr_services below — the
 # service name is misleading (legacy from an earlier owl_cache layer); it
 # now runs Solr directly hosting the vfb_json core.
@@ -292,6 +284,18 @@ solr_services:
     fronts: queryserver (1s304) — vfb_json
     rancher:
       service_url: https://herd.virtualflybrain.org/v2-beta/projects/1a5/services/1s304
+      container_port: 8983
+      container_scheme: http
+  - name: VFBquery Solr (vfbquerycache.virtualflybrain.org)
+    # queryserver-vfbquery (1s348, image virtualflybrain/vfb-solr).
+    # Hostname says "cache" but it's actually a Solr server hosting the
+    # vfb_json core — exact same naming trap as query-cache-server (1s322).
+    # LB rule: vfbquerycache.virtualflybrain.org:80 /solr/ → 8983.
+    base_url: http://vfbquerycache.virtualflybrain.org
+    core: vfb_json
+    fronts: queryserver-vfbquery (1s348)
+    rancher:
+      service_url: https://herd.virtualflybrain.org/v2-beta/projects/1a5/services/1s348
       container_port: 8983
       container_scheme: http
   # Note: query-preview.virtualflybrain.org (1s322) used to be tracked
