@@ -238,6 +238,20 @@ neo4j_services:
 # and /solr/<core>/admin/mbeans?stats=true for /select and /update handler
 # stats (cumulative requests + meanRate). Per-container probing via Rancher
 # v1 API; fallback to LB-fronted probe.
+#
+# Write-health (added v0.12.0): a closed IndexWriter — e.g. an EIO on
+# write.lock when the soft NFS mount backing /var/solr drops — turns every
+# /update into an HTTP 500 while /select and /admin/system stay green, so a
+# plain liveness check misses it. Two detectors, both applied to EVERY core
+# below:
+#   1. Passive (always on, read-only): the UPDATE serverErrors counter rising
+#      between checks flags a live write outage. No prod writes.
+#   2. Active (opt-in per service: `write_probe: true`): issues an empty
+#      commit, the only request that forces IndexWriter.ensureOpen(), so it
+#      detects a closed writer even with no other traffic. It IS a write
+#      request (an empty commit changes no documents), so it's off by default
+#      — enable only where issuing a periodic empty commit against the core is
+#      acceptable.
 solr_services:
   - name: SOLR (solr.virtualflybrain.org)
     base_url: https://solr.virtualflybrain.org

@@ -523,6 +523,9 @@
                     {{ s.container_count }} container{{ '' if s.container_count == 1 else 's' }} ({{ s.ok_count }} ok)
                   </div>
                 </div>
+                {% if s.write_failing and s.write_failing > 0 %}
+                  <span class="badge badge-down" title="{{ s.write_detail or 'update path failing' }}">writes failing ⚠</span>
+                {% endif %}
                 {% if s.container_count > 0 and s.ok_count == s.container_count %}
                   <span class="pill up">ok</span>
                 {% elif s.container_count == 0 %}

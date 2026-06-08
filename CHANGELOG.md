@@ -2,6 +2,16 @@
 
 All notable changes to vfb-status are recorded here. The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.12.0] — 2026-06-08
+
+### Added
+
+- **Solr write-health checks.** Catches the failure mode that took out `vfb_json` on 2026-06-08: a closed Lucene `IndexWriter` (an `EIO` on `write.lock` when the soft NFSv3 mount backing `/var/solr` dropped) turns every `/update` into an HTTP 500 while `/select` and `/admin/system` keep returning 200. The existing liveness probe is a `/select`, so the page stayed green throughout the outage. Two detectors now run against **every** core in `solr_services`:
+  - **Passive (always on, read-only).** Tracks the `UPDATE./update.serverErrors.count` counter (5xx only — client 4xx can't trip it) and flags a write outage when it climbs between checks. Computed from history before the new row is written, so each check seeds the next baseline. A post-restart counter reset reads as a negative delta and never false-alarms. No writes against prod.
+  - **Active (opt-in, `write_probe: true` per service).** Issues an empty commit — the only request that reliably forces `IndexWriter.ensureOpen()` — so it detects a closed writer even with no other traffic. An empty commit changes no documents, but it is a write request, so it is **off by default**; enable per service where a periodic empty commit is acceptable.
+- A container failing writes is marked not-ok (so it counts against uptime and surfaces in the cluster-degraded table) and the Solr card shows a `writes failing ⚠` badge. New fields `u_server_errors`, `write_ok`, `write_detail` on `/api/solr`.
+- `solr_history.u_server_errors` column, added to existing databases via the standard `_migrate()` ADD COLUMN path.
+
 ## [0.11.4] — 2026-06-05
 
 ### Fixed
