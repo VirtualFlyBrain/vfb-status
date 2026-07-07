@@ -31,8 +31,6 @@ groups:
         timeout: 20
       - name: v3.virtualflybrain.org
         url: https://v3.virtualflybrain.org/
-      - name: v3-cached.virtualflybrain.org
-        url: https://v3-cached.virtualflybrain.org/
 
   - name: Data + file servers
     services:
@@ -54,9 +52,6 @@ groups:
         url: https://kb.virtualflybrain.org/browser/
       - name: Owlery (owlery.virtualflybrain.org)
         url: https://owlery.virtualflybrain.org/
-      - name: Owl cache (owl.virtualflybrain.org)
-        url: https://owl.virtualflybrain.org/
-        timeout: 20
       - name: SOLR (solr.virtualflybrain.org)
         url: https://solr.virtualflybrain.org/solr/ontology/select?q=*:*&rows=0&wt=json
         expect: "responseHeader"

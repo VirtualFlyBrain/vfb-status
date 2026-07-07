@@ -47,7 +47,7 @@ log = logging.getLogger("vfb-status")
 CONFIG_PATH = Path(os.environ.get("CONFIG_PATH", "config/services.yml"))
 STATE_FILE = Path(os.environ.get("STATE_FILE", "")) if os.environ.get("STATE_FILE") else None
 CHECK_INTERVAL_SECONDS = int(os.environ.get("CHECK_INTERVAL_SECONDS", str(60 * 60)))
-VERSION = "0.11.8"
+VERSION = "0.12.1"
 USER_AGENT = f"vfb-status/{VERSION} (+https://github.com/VirtualFlyBrain/vfb-status)"
 
 # Maximum seconds one run_checks() cycle may take before we abandon stragglers
@@ -679,14 +679,30 @@ def _parse_cache_json(
     upstream = body.get("upstream") or {}
     cache = body.get("cache") or {}
     conns = body.get("connections") or {}
+    nginx_healthy = _to_bool(health.get("nginx"))
+    upstream_healthy = _to_bool(health.get("upstream"))
+    # A parseable /status only proves the sidecar answered. Treat the container
+    # as down when it reports its own nginx or upstream unhealthy — otherwise a
+    # dead upstream (health.upstream == false) stays green on the page and in
+    # the uptime history. Mirrors the Solr write-health gate added in v0.12.0.
+    ok = nginx_healthy is not False and upstream_healthy is not False
+    err: str | None = None
+    if not ok:
+        bad = []
+        if nginx_healthy is False:
+            bad.append("nginx")
+        if upstream_healthy is False:
+            bad.append(f"upstream ({upstream.get('host') or '?'})")
+        err = "unhealthy: " + ", ".join(bad)
     return CacheCheck(
         name=name,
         status_url=url,
-        ok=True,
+        ok=ok,
+        error=err,
         checked_at=body.get("updated_at") or started,
         container=container,
-        nginx_healthy=_to_bool(health.get("nginx")),
-        upstream_healthy=_to_bool(health.get("upstream")),
+        nginx_healthy=nginx_healthy,
+        upstream_healthy=upstream_healthy,
         upstream_host=upstream.get("host"),
         upstream_port=_to_int(upstream.get("port")),
         cache_total=_to_int(cache.get("total")),

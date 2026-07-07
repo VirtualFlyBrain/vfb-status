@@ -2,6 +2,16 @@
 
 All notable changes to vfb-status are recorded here. The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.12.1] — 2026-07-07
+
+### Fixed
+
+- **Cache liveness now honours the `/status` health object.** `v3-cached` and `owl` (and any `cache_services` entry) were marked up purely because `/status` returned parseable JSON — `_parse_cache_json` hard-coded `ok=True` and never looked at `health.nginx` / `health.upstream`, which it already stored. A dead upstream (`"upstream": false`) stayed green on the page and in the uptime history. `ok` is now gated on both flags (`nginx is not False and upstream is not False`), so an unhealthy upstream flips the container to `err`, moves the card to `partial`/`down`, and counts against uptime. The container row shows `unhealthy: upstream (<host>)`. Same idea as the Solr write-health gate in v0.12.0.
+
+### Removed
+
+- **Redundant root `/` liveness checks for `v3-cached` and `owl`.** Both were probed twice: a `groups:` `GET /` (nginx-only liveness, blind to upstream) plus the `cache_services:` `/status` card. The `/` entries went green on a dead upstream and duplicated the card, so they've been dropped. These services are now tracked solely via their `/status` health-gated cache cards.
+
 ## [0.12.0] — 2026-06-08
 
 ### Added
