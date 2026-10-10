@@ -1078,12 +1078,18 @@ async def _probe_neo4j_at(
         )
     db_status: str | None = None
     db_error: str | None = None
-    for r in (body.get("results") or [{}])[0].get("data", []):
+    result = (body.get("results") or [{}])[0]
+    # Look columns up by name: Neo4j 4.2 returns name, address, role, requestedStatus,
+    # currentStatus, error, default; 4.4 adds aliases/access/home, which shifts positions.
+    cols = result.get("columns") or []
+    i_name = cols.index("name") if "name" in cols else 0
+    i_status = cols.index("currentStatus") if "currentStatus" in cols else 4
+    i_error = cols.index("error") if "error" in cols else 5
+    for r in result.get("data", []):
         row = r.get("row") or []
-        # Columns: name, address, role, requestedStatus, currentStatus, error, default
-        if len(row) >= 6 and row[0] == svc.db:
-            db_status = row[4]
-            db_error = row[5] or None
+        if len(row) > max(i_name, i_status, i_error) and row[i_name] == svc.db:
+            db_status = row[i_status]
+            db_error = row[i_error] or None
             break
     if db_status is None:
         return Neo4jCheck(

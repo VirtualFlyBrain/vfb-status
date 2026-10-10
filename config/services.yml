@@ -129,6 +129,47 @@ groups:
         url: https://upload.virtualflybrain.org/
         expect_status: [200, 301, 302, 401, 403, 404]
 
+  # New Kubernetes cluster (Appleton Tower: vfbk8s11/12). Test hostnames until each service's cut-over;
+  # docs in talosconfig (private). The cluster-health check is the important one: it goes red when anything
+  # inside the cluster is degraded (a node under pressure, a workload not fully ready, a volume or
+  # certificate in trouble) even if every public URL still answers — e.g. Solr on 1 of 3 nodes.
+  - name: Kubernetes cluster (AT)
+    services:
+      - name: Cluster health (health.k8s.virtualflybrain.org)
+        url: https://health.k8s.virtualflybrain.org/status
+        expect: '"ok": true'
+      - name: PDB Neo4j browser (pdb.k8s.virtualflybrain.org)
+        url: https://pdb.k8s.virtualflybrain.org/browser/
+      - name: PDB analytics Neo4j browser (pdb-analytics.k8s.virtualflybrain.org)
+        url: https://pdb-analytics.k8s.virtualflybrain.org/browser/
+      - name: KB Neo4j browser (kb.k8s.virtualflybrain.org)
+        url: https://kb.k8s.virtualflybrain.org/browser/
+      - name: SolrCloud ontology (solr.k8s.virtualflybrain.org)
+        url: https://solr.k8s.virtualflybrain.org/solr/ontology/select?q=*:*&rows=0&wt=json
+        expect: '"numFound"'
+      - name: SolrCloud vfb_json (solr.k8s.virtualflybrain.org)
+        url: https://solr.k8s.virtualflybrain.org/solr/vfb_json/select?q=*:*&rows=0&wt=json
+        expect: '"numFound"'
+      - name: SolrCloud vfbquery_cache (solr.k8s.virtualflybrain.org)
+        url: https://solr.k8s.virtualflybrain.org/solr/vfbquery_cache/select?q=*:*&rows=0&wt=json
+        expect: '"numFound"'
+      - name: Mesh VPN control (vpn.control.virtualflybrain.org)
+        url: https://vpn.control.virtualflybrain.org/health
+      - name: Rancher (rancher.control.virtualflybrain.org)
+        url: https://rancher.control.virtualflybrain.org/
+      - name: Argo Workflows (argo.control.virtualflybrain.org)
+        url: https://argo.control.virtualflybrain.org/
+        expect_status: [200, 401]          # basic auth in front: 401 = up
+      - name: Grafana (grafana.control.virtualflybrain.org)
+        url: https://grafana.control.virtualflybrain.org/
+        expect_status: [200, 301, 302]
+      - name: Longhorn (longhorn.control.virtualflybrain.org)
+        url: https://longhorn.control.virtualflybrain.org/
+        expect_status: [200, 401]
+      - name: Hubble (hubble.control.virtualflybrain.org)
+        url: https://hubble.control.virtualflybrain.org/
+        expect_status: [200, 401]
+
 # Caching services. Each entry has TWO probe paths:
 #   1. status_url — fallback single-LB probe (used when rancher: isn't set or
 #      when the Rancher API call fails).
@@ -232,6 +273,36 @@ neo4j_services:
       service_url: https://herd.virtualflybrain.org/v2-beta/projects/1a5/services/1s56
       container_port: 7474
       container_scheme: http
+
+  - name: PDB Neo4j — cluster (pdb.k8s.virtualflybrain.org)
+    # Neo4j 4.4 copies on the Kubernetes cluster (autoscaled 3-8, behind ingress-nginx). LB-fronted: each
+    # probe lands on one copy; per-copy readiness is covered by the Cluster health check.
+    base_url: https://pdb.k8s.virtualflybrain.org
+    db: neo4j
+    user: neo4j
+    password: vfb
+    password_env: NEO4J_PASSWORD
+    min_nodes: 1600000
+    timeout: 20
+    fronts: Production Database on the cluster (test hostname until cut-over)
+  - name: PDB Neo4j — cluster analytics (pdb-analytics.k8s.virtualflybrain.org)
+    base_url: https://pdb-analytics.k8s.virtualflybrain.org
+    db: neo4j
+    user: neo4j
+    password: vfb
+    password_env: NEO4J_PASSWORD
+    min_nodes: 1600000
+    timeout: 20
+    fronts: Isolated PDB copy for long-running analytics
+  - name: KB Neo4j — cluster (kb.k8s.virtualflybrain.org)
+    base_url: https://kb.k8s.virtualflybrain.org
+    db: neo4j
+    user: neo4j
+    password: vfb
+    password_env: NEO4J_PASSWORD
+    min_nodes: 1500000
+    timeout: 20
+    fronts: Read-only KB copies on the cluster (test hostname until cut-over)
 
 # Solr services. Probes /solr/<core>/admin/system for JVM memory + system load
 # and /solr/<core>/admin/mbeans?stats=true for /select and /update handler

@@ -2,6 +2,25 @@
 
 All notable changes to vfb-status are recorded here. The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.13.0] — 2026-10-10
+
+### Added
+
+- **Kubernetes cluster (AT) group** — the new Talos/Kubernetes cluster's services: the cluster-health summary
+  (`health.k8s.virtualflybrain.org/status`, must report `"ok": true` — goes red when a node is under pressure, a
+  workload isn't fully ready, a Longhorn volume or certificate is in trouble, or a Fleet bundle is stuck), the
+  PDB / PDB-analytics / KB Neo4j browsers and the three SolrCloud collections on their `*.k8s` test hostnames,
+  the mesh-VPN control plane, and the cluster UIs (Rancher, Argo, Grafana, Longhorn, Hubble; 401 = up behind
+  basic auth).
+- **Neo4j data checks for the cluster copies** — `pdb.k8s` and `pdb-analytics.k8s` (≥ 1.6 M nodes) and `kb.k8s`
+  (≥ 1.5 M), via the existing two-stage SHOW DATABASES + count probe.
+
+### Fixed
+
+- **Neo4j 4.4 `SHOW DATABASES`** — the probe read `currentStatus` by position (column 4), which is `role` on
+  Neo4j 4.4 (it added aliases/access/home), so every 4.4 database showed as down ("is standalone"). Columns are
+  now looked up by name; 4.2 servers are unaffected.
+
 ## [0.12.1] — 2026-07-07
 
 ### Fixed
