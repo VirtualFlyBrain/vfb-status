@@ -9,6 +9,7 @@
     :root {
       --up: #1f9d55;
       --down: #c0392b;
+      --warn: #e67e22;
       --unknown: #888;
       --bg: #fafafa;
       --fg: #222;
@@ -49,6 +50,7 @@
     .summary { margin: 1.2rem 0 0.6rem; color: var(--muted); }
     .summary strong { color: var(--fg); }
     .summary .up { color: var(--up); }
+    .summary .warn { color: var(--warn); }
     .summary .down { color: var(--down); }
     section { margin-top: 1.5rem; }
     section h2 {
@@ -79,10 +81,12 @@
       text-transform: uppercase; letter-spacing: 0.04em;
     }
     .pill.up { background: var(--up); }
+    .pill.warn { background: var(--warn); }
     .pill.down { background: var(--down); }
     .pill.unknown { background: var(--unknown); }
     .pill.auth { background: #d18a16; }
     .svc-err { color: var(--down); font-size: 0.8rem; }
+    .svc-err.warn { color: var(--warn); }
 
     .strip {
       display: flex;
@@ -99,6 +103,7 @@
       transition: transform 60ms ease;
     }
     .strip .bucket.up { background: var(--up); opacity: 1; }
+    .strip .bucket.warn { background: var(--warn); opacity: 1; }
     .strip .bucket.down { background: var(--down); opacity: 1; }
     .strip .bucket:hover { transform: scaleY(1.15); }
 
@@ -239,8 +244,9 @@
     <div class="summary">
       <strong>{{ total }}</strong> services checked —
       <span class="up"><strong>{{ up }}</strong> up</span>,
-      <span class="down"><strong>{{ down }}</strong> down</span>{% if total - up - down > 0 %},
-      <strong>{{ total - up - down }}</strong> unknown{% endif %}.
+      {% if warn %}<span class="warn"><strong>{{ warn }}</strong> warning</span>,
+      {% endif %}<span class="down"><strong>{{ down }}</strong> down</span>{% if total - up - warn - down > 0 %},
+      <strong>{{ total - up - warn - down }}</strong> unknown{% endif %}.
       {% if history_enabled %}
         Strip shows the last
         {% if history_bucket_seconds == 3600 %}{{ history_buckets }} hours{% else %}{{ history_buckets }} × {{ history_bucket_seconds }} s{% endif %}
@@ -280,7 +286,7 @@
                     {% if rh.is_dns_ingress %}<span class="badge badge-dns" title="virtualflybrain.org DNS A-record points at this host's agentIpAddress ({{ rh.agent_ip }})">DNS</span>{% endif %}
                   </span>
                 {% endif %}
-                {% if _row_err %}<div class="svc-err">{{ _row_err }}</div>{% endif %}
+                {% if _row_err %}<div class="svc-err{% if _row_status == 'warn' %} warn{% endif %}">{{ _row_err }}</div>{% endif %}
               </div>
               <div class="svc-meta">
                 {{ r.http_status if r.http_status is not none else "—" }}

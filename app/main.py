@@ -47,7 +47,7 @@ log = logging.getLogger("vfb-status")
 CONFIG_PATH = Path(os.environ.get("CONFIG_PATH", "config/services.yml"))
 STATE_FILE = Path(os.environ.get("STATE_FILE", "")) if os.environ.get("STATE_FILE") else None
 CHECK_INTERVAL_SECONDS = int(os.environ.get("CHECK_INTERVAL_SECONDS", str(60 * 60)))
-VERSION = "0.13.0"
+VERSION = "0.14.0"
 USER_AGENT = f"vfb-status/{VERSION} (+https://github.com/VirtualFlyBrain/vfb-status)"
 
 # Maximum seconds one run_checks() cycle may take before we abandon stragglers
@@ -115,6 +115,10 @@ class ServiceSpec:
     expect_status: list[int] = field(default_factory=lambda: [200, 301, 302])
     expect: str | None = None
     verify_tls: bool = True  # set false where the cert legitimately doesn't cover the subdomain
+    # JSON health endpoint of the form {"ok": bool, "problems": [str, ...]}.
+    # ok=true -> up; ok=false -> "warn" (the service is running and reporting
+    # an issue; the problems text becomes the warning); unreadable -> down.
+    health_json: bool = False
 
 
 @dataclass
@@ -122,7 +126,7 @@ class CheckResult:
     name: str
     group: str
     url: str
-    status: str  # "up" | "down" | "unknown"
+    status: str  # "up" | "warn" | "down" | "unknown"
     http_status: int | None = None
     latency_ms: int | None = None
     error: str | None = None
@@ -434,6 +438,7 @@ def load_services(path: Path) -> list[ServiceSpec]:
                     ),
                     expect=svc.get("expect"),
                     verify_tls=bool(svc.get("verify_tls", defaults.get("verify_tls", True))),
+                    health_json=bool(svc.get("health_json", False)),
                 )
             )
     log.info("loaded %d services from %s", len(services), path)
@@ -616,6 +621,18 @@ async def probe(client_verify: httpx.AsyncClient, client_no_verify: httpx.AsyncC
         body_ok = True
         if svc.expect and status_ok:
             body_ok = svc.expect in resp.text
+        if svc.health_json and status_ok:
+            state, detail = _interpret_health_json(resp)
+            return CheckResult(
+                name=svc.name,
+                group=svc.group,
+                url=svc.url,
+                status=state,
+                http_status=resp.status_code,
+                latency_ms=latency_ms,
+                error=detail,
+                checked_at=started.isoformat(timespec="seconds"),
+            )
         return CheckResult(
             name=svc.name,
             group=svc.group,
@@ -649,6 +666,35 @@ async def probe(client_verify: httpx.AsyncClient, client_no_verify: httpx.AsyncC
             error=f"{type(exc).__name__}: {exc}",
             checked_at=started.isoformat(timespec="seconds"),
         )
+
+
+def _interpret_health_json(resp: httpx.Response) -> tuple[str, str | None]:
+    """Map a {"ok": bool, "problems": [...]} health body to (status, detail).
+
+    ok=true  -> ("up", None)
+    ok=false -> ("warn", "<problems joined>") — the endpoint answered, so the
+                service is running; it is just reporting an issue, and the
+                reason belongs in the warning text.
+    anything we cannot read -> ("down", reason) — a health endpoint that
+                returns something unintelligible is itself a fault.
+    """
+    try:
+        body = resp.json()
+    except Exception:  # noqa: BLE001
+        return "down", "health endpoint did not return valid JSON"
+    if not isinstance(body, dict) or not isinstance(body.get("ok"), bool):
+        return "down", "health JSON has no boolean 'ok' field"
+    if body["ok"]:
+        return "up", None
+    problems = body.get("problems")
+    if isinstance(problems, str):
+        problems = [problems]
+    if isinstance(problems, list) and problems:
+        text = "; ".join(str(p) for p in problems)
+    else:
+        text = "reported ok: false without listing a reason"
+    checked = body.get("checked_at")
+    return "warn", f"{text} (as of {checked})" if checked else text
 
 
 def _explain(resp: httpx.Response, svc: ServiceSpec, body_ok: bool) -> str:
@@ -2278,7 +2324,9 @@ class History:
         except sqlite3.Error as exc:
             log.warning("uptime_pct read failed for %s: %s", service, exc)
             return None, 0
-        up = counts.get("up", 0)
+        # "warn" = answering but reporting an issue: still available, so it
+        # counts towards uptime (it is shown orange in the strip).
+        up = counts.get("up", 0) + counts.get("warn", 0)
         down = counts.get("down", 0)
         known = up + down
         if known == 0:
@@ -2291,7 +2339,8 @@ class History:
         """Return a list of `n_buckets` statuses for the given service, oldest first.
 
         Each bucket spans `bucket_seconds`. Status reduction rule per bucket:
-        any `down` -> `down`, else any `up` -> `up`, else `unknown` (no data).
+        any `down` -> `down`, else any `warn` -> `warn`, else any `up` -> `up`,
+        else `unknown` (no data).
         """
         if self._conn is None:
             return ["unknown"] * n_buckets
@@ -2313,12 +2362,14 @@ class History:
             if idx < 0 or idx >= n_buckets:
                 continue
             current = out[idx]
-            # down beats up beats unknown
+            # down beats warn beats up beats unknown
             if current == "down":
                 continue
             if status == "down":
                 out[idx] = "down"
-            elif status == "up" and current != "down":
+            elif status == "warn":
+                out[idx] = "warn"
+            elif status == "up" and current != "warn":
                 out[idx] = "up"
         return out
 
@@ -2600,6 +2651,7 @@ class State:
                     except Exception as exc:  # noqa: BLE001
                         log.warning("history write failed: %s", exc)
                 up = sum(1 for r in results if r.status == "up")
+                warn = sum(1 for r in results if r.status == "warn")
                 cache_ok = sum(1 for c in cache_results if c.ok)
                 cache_total = len({c.name for c in cache_results}) or len(self.cache_services)
                 app_ok = sum(1 for a in app_results if a.ok)
@@ -2617,9 +2669,9 @@ class State:
                     else:
                         cluster_msg = f", cluster: {cluster_result.error}"
                 log.info(
-                    "checks complete: %d/%d up, %d/%d cache rows (%d services), "
+                    "checks complete: %d/%d up (%d warn), %d/%d cache rows (%d services), "
                     "%d/%d apps, %d/%d neo4j, %d/%d solr%s",
-                    up, len(results), cache_ok, len(cache_results), cache_total,
+                    up, len(results), warn, cache_ok, len(cache_results), cache_total,
                     app_ok, len(app_results), neo_ok, len(neo4j_results),
                     solr_ok, len(solr_results), cluster_msg,
                 )
@@ -3003,6 +3055,7 @@ async def index(request: Request) -> HTMLResponse:
         return r.get("display_status") or r["result"].status
     up = sum(1 for r in all_rows if _row_status(r) == "up")
     down = sum(1 for r in all_rows if _row_status(r) == "down")
+    warn = sum(1 for r in all_rows if _row_status(r) == "warn")
     cache_cards = [_cache_card(state, s) for s in state.cache_services]
     app_cards = [_app_card(state, s) for s in state.app_services]
     neo4j_cards = [_neo4j_card(state, s) for s in state.neo4j_services]
@@ -3048,6 +3101,7 @@ async def index(request: Request) -> HTMLResponse:
             "running": state.running,
             "total": total,
             "up": up,
+            "warn": warn,
             "down": down,
             "interval_seconds": CHECK_INTERVAL_SECONDS,
             "history_enabled": state.history.enabled,

@@ -2,6 +2,12 @@
 
 All notable changes to vfb-status are recorded here. The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.14.0] — 2026-10-11
+
+### Changed
+
+- **Orange "warn" status for JSON health endpoints.** New per-service `health_json: true` option for endpoints returning `{"ok": bool, "problems": [...]}`. `ok: true` is up; `ok: false` is now an orange **warn** (the service answered, so it is running — it is reporting an issue) with the endpoint's own `problems` text as the warning, instead of a red "body did not contain expected string". An unreadable response is still red. Warn counts towards uptime %, is orange in the history strip (down beats warn beats up), and has its own count in the headline. The cluster-health check uses it.
+
 ## [0.13.0] — 2026-10-10
 
 ### Added
