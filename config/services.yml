@@ -130,14 +130,14 @@ groups:
         expect_status: [200, 301, 302, 401, 403, 404]
 
   # New Kubernetes cluster (Appleton Tower: vfbk8s11/12). Test hostnames until each service's cut-over;
-  # docs in talosconfig (private). The cluster-health check is the important one: it goes red when anything
+  # docs in talosconfig (private). The cluster-health check is the important one: it goes orange (with the reason) when anything
   # inside the cluster is degraded (a node under pressure, a workload not fully ready, a volume or
   # certificate in trouble) even if every public URL still answers — e.g. Solr on 1 of 3 nodes.
   - name: Kubernetes cluster (AT)
     services:
       - name: Cluster health (health.k8s.virtualflybrain.org)
         url: https://health.k8s.virtualflybrain.org/status
-        expect: '"ok": true'
+        health_json: true       # ok:false -> orange warning carrying the endpoint's own "problems" text
       - name: PDB Neo4j browser (pdb.k8s.virtualflybrain.org)
         url: https://pdb.k8s.virtualflybrain.org/browser/
       - name: PDB analytics Neo4j browser (pdb-analytics.k8s.virtualflybrain.org)
