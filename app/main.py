@@ -47,7 +47,7 @@ log = logging.getLogger("vfb-status")
 CONFIG_PATH = Path(os.environ.get("CONFIG_PATH", "config/services.yml"))
 STATE_FILE = Path(os.environ.get("STATE_FILE", "")) if os.environ.get("STATE_FILE") else None
 CHECK_INTERVAL_SECONDS = int(os.environ.get("CHECK_INTERVAL_SECONDS", str(60 * 60)))
-VERSION = "0.14.0"
+VERSION = "0.14.1"
 USER_AGENT = f"vfb-status/{VERSION} (+https://github.com/VirtualFlyBrain/vfb-status)"
 
 # Maximum seconds one run_checks() cycle may take before we abandon stragglers
@@ -62,6 +62,9 @@ _HISTORY_DB_RAW = os.environ.get("HISTORY_DB", "/data/history.db")
 HISTORY_DB = Path(_HISTORY_DB_RAW) if _HISTORY_DB_RAW else None
 # Retention: trim rows older than this on startup and once a day. 0 = keep forever.
 HISTORY_RETENTION_DAYS = int(os.environ.get("HISTORY_RETENTION_DAYS", "365"))
+# How often to retry taking over the history DB after a failed start (e.g. the
+# previous container still holds the lock during a rolling upgrade). 0 = never.
+HISTORY_RETRY_SECONDS = int(os.environ.get("HISTORY_RETRY_SECONDS", "120"))
 # Status-strip width on the page (one block per bucket, default 1 h per block).
 HISTORY_BUCKETS = int(os.environ.get("HISTORY_BUCKETS", "72"))
 HISTORY_BUCKET_SECONDS = int(os.environ.get("HISTORY_BUCKET_SECONDS", "3600"))
@@ -1793,9 +1796,35 @@ class History:
         self.path = path
         self._conn: sqlite3.Connection | None = None
         self._lock_fd: int | None = None
+        # Why history is currently off, shown on the page; None when enabled
+        # or disabled on purpose. `retryable` = worth trying again later.
+        self.reason: str | None = None
+        self.retryable = False
         if path is None:
             log.warning("history is disabled (HISTORY_DB explicitly empty)")
             return
+        self._open()
+
+    def retry_open(self) -> bool:
+        """Try again to take over the history DB after an earlier failure.
+
+        Called periodically by the scheduler. The usual cause of a failed
+        start is a rolling upgrade where the previous container still holds
+        the lock for a short while; once it has stopped, the lock is free
+        and history switches on without a restart. Returns True when
+        history is enabled afterwards.
+        """
+        if self._conn is not None:
+            return True
+        if self.path is None or not self.retryable:
+            return False
+        self._open()
+        return self._conn is not None
+
+    def _open(self) -> None:
+        path = self.path
+        assert path is not None
+        self.retryable = False
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
             # Exclusive flock on a sentinel file so a second container running
@@ -1809,12 +1838,19 @@ class History:
                 )
                 fcntl.flock(self._lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError:
-                log.error(
-                    "history disabled: another vfb-status instance is already "
-                    "writing to %s. Refusing to corrupt the database. "
-                    "Set scale=1 and Rancher upgrade strategy to "
-                    "Stop-then-Start.", path,
+                if not self.reason:  # log once, not on every retry
+                    log.error(
+                        "history disabled for now: another vfb-status instance is "
+                        "already writing to %s (probably the previous container "
+                        "during an upgrade). Will retry every %ds; set scale=1 and "
+                        "the Rancher upgrade strategy to Stop-then-Start to avoid "
+                        "the overlap.", path, HISTORY_RETRY_SECONDS,
+                    )
+                self.reason = (
+                    "waiting for another vfb-status instance to release "
+                    f"{path} — retrying every {HISTORY_RETRY_SECONDS}s"
                 )
+                self.retryable = True
                 if self._lock_fd is not None:
                     os.close(self._lock_fd)
                     self._lock_fd = None
@@ -1843,16 +1879,24 @@ class History:
             self._conn.execute("PRAGMA busy_timeout=2000")
             self._conn.executescript(self.SCHEMA)
             self._migrate()
+            self.reason = None
             log.info("history db at %s (writable, journal_mode=%s)", path, journal)
         except OSError as exc:
             # Most likely /data isn't mounted writable. Don't crash the app —
             # just disable history and surface the reason loudly on the page.
             self._conn = None
-            log.error(
-                "history disabled: cannot open %s (%s). "
-                "Mount a persistent volume at %s and ensure it is writable.",
-                path, exc, path.parent,
-            )
+            if self._lock_fd is not None:
+                os.close(self._lock_fd)
+                self._lock_fd = None
+            if not self.reason:
+                log.error(
+                    "history disabled: cannot open %s (%s). "
+                    "Mount a persistent volume at %s and ensure it is writable. "
+                    "Will retry every %ds.",
+                    path, exc, path.parent, HISTORY_RETRY_SECONDS,
+                )
+            self.reason = f"cannot open {path} ({exc}) — retrying every {HISTORY_RETRY_SECONDS}s"
+            self.retryable = True
 
     @property
     def enabled(self) -> bool:
@@ -2711,7 +2755,21 @@ async def lifespan(app: FastAPI):  # type: ignore[no-untyped-def]
         max_instances=1,
         coalesce=True,
     )
-    if history.enabled and HISTORY_RETENTION_DAYS > 0:
+    if history.retryable and HISTORY_RETRY_SECONDS > 0:
+        def _retry_history() -> None:
+            if history.retry_open():
+                log.info("history now enabled; stopping retries")
+                scheduler.remove_job("history-retry")
+                history.prune(HISTORY_RETENTION_DAYS)
+
+        scheduler.add_job(
+            _retry_history,
+            trigger=IntervalTrigger(seconds=HISTORY_RETRY_SECONDS),
+            id="history-retry",
+            max_instances=1,
+            coalesce=True,
+        )
+    if (history.enabled or history.retryable) and HISTORY_RETENTION_DAYS > 0:
         scheduler.add_job(
             lambda: history.prune(HISTORY_RETENTION_DAYS),
             trigger=IntervalTrigger(seconds=86400),
@@ -3105,6 +3163,7 @@ async def index(request: Request) -> HTMLResponse:
             "down": down,
             "interval_seconds": CHECK_INTERVAL_SECONDS,
             "history_enabled": state.history.enabled,
+            "history_reason": state.history.reason,
             "history_buckets": HISTORY_BUCKETS,
             "history_bucket_seconds": HISTORY_BUCKET_SECONDS,
             "cache_cards": cache_cards,

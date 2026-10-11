@@ -252,7 +252,8 @@
         {% if history_bucket_seconds == 3600 %}{{ history_buckets }} hours{% else %}{{ history_buckets }} × {{ history_bucket_seconds }} s{% endif %}
         (oldest left, newest right).
       {% else %}
-        History storage is disabled — set <code>HISTORY_DB</code> to enable the uptime strip.
+        {% if history_reason %}History storage is off for now: {{ history_reason }}.
+        {% else %}History storage is disabled — set <code>HISTORY_DB</code> to enable the uptime strip.{% endif %}
       {% endif %}
     </div>
 

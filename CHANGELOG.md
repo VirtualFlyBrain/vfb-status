@@ -2,6 +2,12 @@
 
 All notable changes to vfb-status are recorded here. The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.14.1] — 2026-10-11
+
+### Changed
+
+- **History retries instead of staying off.** If the history DB can't be taken over at startup — usually because the previous container still holds `<HISTORY_DB>.lock` during a Rancher start-first upgrade — vfb-status no longer runs without history for its whole life. It retries every `HISTORY_RETRY_SECONDS` (default 120, `0` = never) and switches history on as soon as the lock is free, with no restart. The page says why history is off ("waiting for another vfb-status instance to release …") instead of the generic "set HISTORY_DB". An unwritable `/data` is retried the same way.
+
 ## [0.14.0] — 2026-10-11
 
 ### Changed
