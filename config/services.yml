@@ -138,8 +138,6 @@ groups:
       - name: Cluster health (health.k8s.virtualflybrain.org)
         url: https://health.k8s.virtualflybrain.org/status
         health_json: true       # ok:false -> orange warning carrying the endpoint's own "problems" text
-      - name: PDB Neo4j browser (pdb.k8s.virtualflybrain.org)
-        url: https://pdb.k8s.virtualflybrain.org/browser/
       - name: PDB analytics Neo4j browser (pdb-analytics.k8s.virtualflybrain.org)
         url: https://pdb-analytics.k8s.virtualflybrain.org/browser/
       - name: KB Neo4j browser (kb.k8s.virtualflybrain.org)
@@ -274,17 +272,6 @@ neo4j_services:
       container_port: 7474
       container_scheme: http
 
-  - name: PDB Neo4j — cluster (pdb.k8s.virtualflybrain.org)
-    # Neo4j 4.4 copies on the Kubernetes cluster (autoscaled 3-8, behind ingress-nginx). LB-fronted: each
-    # probe lands on one copy; per-copy readiness is covered by the Cluster health check.
-    base_url: https://pdb.k8s.virtualflybrain.org
-    db: neo4j
-    user: neo4j
-    password: vfb
-    password_env: NEO4J_PASSWORD
-    min_nodes: 1600000
-    timeout: 20
-    fronts: Production Database on the cluster (test hostname until cut-over)
   - name: PDB Neo4j — cluster analytics (pdb-analytics.k8s.virtualflybrain.org)
     base_url: https://pdb-analytics.k8s.virtualflybrain.org
     db: neo4j
