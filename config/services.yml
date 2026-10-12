@@ -233,7 +233,7 @@ neo4j_services:
     user: neo4j
     password: vfb                  # public read-only credential
     password_env: NEO4J_PASSWORD   # env wins if set
-    min_nodes: 1000000      # PDB docs quote 1.1M+ nodes; alert if below 1M
+    min_nodes: 1600000      # cluster pdb holds ~1.7M nodes; alert if below 1.6M
     timeout: 20
     fronts: Production Database (knowledge graph)
     # Per-container probing — each Neo4j container gets its own
