@@ -47,7 +47,7 @@ log = logging.getLogger("vfb-status")
 CONFIG_PATH = Path(os.environ.get("CONFIG_PATH", "config/services.yml"))
 STATE_FILE = Path(os.environ.get("STATE_FILE", "")) if os.environ.get("STATE_FILE") else None
 CHECK_INTERVAL_SECONDS = int(os.environ.get("CHECK_INTERVAL_SECONDS", str(60 * 60)))
-VERSION = "0.14.0"
+VERSION = "0.15.0"
 USER_AGENT = f"vfb-status/{VERSION} (+https://github.com/VirtualFlyBrain/vfb-status)"
 
 # Maximum seconds one run_checks() cycle may take before we abandon stragglers
@@ -131,6 +131,7 @@ class CheckResult:
     latency_ms: int | None = None
     error: str | None = None
     checked_at: str | None = None  # ISO timestamp
+    info: str | None = None  # health_json "info": neutral note shown in any state (e.g. last build)
 
 
 @dataclass
@@ -632,6 +633,7 @@ async def probe(client_verify: httpx.AsyncClient, client_no_verify: httpx.AsyncC
                 latency_ms=latency_ms,
                 error=detail,
                 checked_at=started.isoformat(timespec="seconds"),
+                info=_health_json_info(resp),
             )
         return CheckResult(
             name=svc.name,
@@ -666,6 +668,19 @@ async def probe(client_verify: httpx.AsyncClient, client_no_verify: httpx.AsyncC
             error=f"{type(exc).__name__}: {exc}",
             checked_at=started.isoformat(timespec="seconds"),
         )
+
+
+def _health_json_info(resp: httpx.Response) -> str | None:
+    """Optional "info" string from a health_json body: a neutral note (e.g. the
+    last build's version and date) shown on the row whatever its state."""
+    try:
+        body = resp.json()
+    except Exception:  # noqa: BLE001
+        return None
+    info = body.get("info") if isinstance(body, dict) else None
+    if isinstance(info, list):
+        info = "; ".join(str(i) for i in info)
+    return str(info)[:300] if info else None
 
 
 def _interpret_health_json(resp: httpx.Response) -> tuple[str, str | None]:

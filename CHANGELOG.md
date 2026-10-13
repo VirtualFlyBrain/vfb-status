@@ -2,6 +2,12 @@
 
 All notable changes to vfb-status are recorded here. The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.15.0] — 2026-10-13
+
+### Added
+
+- **`info` line for JSON health endpoints.** A `health_json` body may carry an optional `"info"` string (or list of strings), shown as a grey note under the service name whatever the state, so a green row can still say what it is reporting on — e.g. the last data-release build's version and date, or the release currently live. Truncated to 300 characters.
+
 ## [0.14.0] — 2026-10-11
 
 ### Changed

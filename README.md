@@ -180,7 +180,8 @@ groups:
         timeout: 20                # overrides default
         expect_status: [200]       # overrides default
         expect: "Some response body substring"   # optional content check
-        health_json: true          # {"ok": bool, "problems": [...]}: ok:false -> orange warn showing the problems
+        health_json: true          # {"ok": bool, "problems": [...], "info": "..."}: ok:false -> orange warn showing
+                                   # the problems; optional "info" is a grey note shown in any state (e.g. last build)
 ```
 
 ## Development

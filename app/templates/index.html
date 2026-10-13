@@ -87,6 +87,7 @@
     .pill.auth { background: #d18a16; }
     .svc-err { color: var(--down); font-size: 0.8rem; }
     .svc-err.warn { color: var(--warn); }
+    .svc-info { color: var(--muted); font-size: 0.8rem; }
 
     .strip {
       display: flex;
@@ -286,6 +287,7 @@
                     {% if rh.is_dns_ingress %}<span class="badge badge-dns" title="virtualflybrain.org DNS A-record points at this host's agentIpAddress ({{ rh.agent_ip }})">DNS</span>{% endif %}
                   </span>
                 {% endif %}
+                {% if r.info %}<div class="svc-info">{{ r.info }}</div>{% endif %}
                 {% if _row_err %}<div class="svc-err{% if _row_status == 'warn' %} warn{% endif %}">{{ _row_err }}</div>{% endif %}
               </div>
               <div class="svc-meta">
