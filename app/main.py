@@ -47,7 +47,7 @@ log = logging.getLogger("vfb-status")
 CONFIG_PATH = Path(os.environ.get("CONFIG_PATH", "config/services.yml"))
 STATE_FILE = Path(os.environ.get("STATE_FILE", "")) if os.environ.get("STATE_FILE") else None
 CHECK_INTERVAL_SECONDS = int(os.environ.get("CHECK_INTERVAL_SECONDS", str(60 * 60)))
-VERSION = "0.15.0"
+VERSION = "0.15.1"
 USER_AGENT = f"vfb-status/{VERSION} (+https://github.com/VirtualFlyBrain/vfb-status)"
 
 # Maximum seconds one run_checks() cycle may take before we abandon stragglers
@@ -2555,9 +2555,20 @@ class State:
         try:
             data = json.loads(STATE_FILE.read_text())
             self.last_run = data.get("last_run")
+            configured = {s.name for s in self.services}
+            dropped = 0
             for r in data.get("results", []):
+                # Skip checks that are no longer configured (renamed or removed).
+                # Without this they are restored, re-persisted and shown with
+                # their last status for ever (2026-10-13: 13 frozen rows).
+                if r.get("name") not in configured:
+                    dropped += 1
+                    continue
                 self.results[r["name"]] = CheckResult(**r)
-            log.info("restored %d results from %s", len(self.results), STATE_FILE)
+            log.info(
+                "restored %d results from %s (dropped %d no longer configured)",
+                len(self.results), STATE_FILE, dropped,
+            )
         except Exception as exc:  # noqa: BLE001
             log.warning("failed to load state from %s: %s", STATE_FILE, exc)
 
@@ -2606,6 +2617,9 @@ class State:
                     return
                 for r in results:
                     self.results[r.name] = r
+                configured = {s.name for s in self.services}
+                for stale in [n for n in self.results if n not in configured]:
+                    del self.results[stale]
                 self.cache_results = {}
                 for cr in cache_results:
                     self.cache_results.setdefault(cr.name, []).append(cr)

@@ -2,6 +2,12 @@
 
 All notable changes to vfb-status are recorded here. The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.15.1] — 2026-10-25
+
+### Fixed
+
+- **Removed checks no longer linger on the page.** Results restored from `STATE_FILE` for checks that are not in the current config (renamed or removed) are now dropped on startup and after every run. Before, they were restored, re-saved and shown with their last status indefinitely: after the 0.15.0 config change, 13 "Kubernetes cluster (AT)" rows stayed frozen at their 2026-10-13 20:15 result, including a stale "up" for SolrCloud checks during a real Solr outage.
+
 ## [0.15.0] — 2026-10-13
 
 ### Added
