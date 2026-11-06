@@ -26,11 +26,14 @@ groups:
       - name: www.virtualflybrain.org
         url: https://www.virtualflybrain.org/
         expect: "Virtual Fly Brain"
-      - name: v2.virtualflybrain.org (Geppetto app)
+      - name: v3.virtualflybrain.org (Geppetto app)
+        url: https://v3.virtualflybrain.org/org.geppetto.frontend/geppetto
+        timeout: 20
+      - name: v2.virtualflybrain.org (same app, older name)
         url: https://v2.virtualflybrain.org/org.geppetto.frontend/geppetto
         timeout: 20
-      - name: v3.virtualflybrain.org
-        url: https://v3.virtualflybrain.org/
+      - name: v3.archive.virtualflybrain.org (previous v3 front end)
+        url: https://v3.archive.virtualflybrain.org/
 
   - name: Data + file servers
     services:
