@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="en-GB">
+<head>
+  <meta charset="utf-8">
+  <title>VFB cache status after releases</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="refresh" content="60">
+  <style>
+    :root { --up:#1f9d55; --down:#c0392b; --warn:#e67e22; --run:#2b7de9; --unknown:#888;
+            --bg:#fafafa; --fg:#222; --card:#fff; --muted:#666; --border:#e2e2e2; }
+    @media (prefers-color-scheme: dark) {
+      :root { --bg:#15171a; --fg:#e6e6e6; --card:#1f2226; --muted:#a0a0a0; --border:#2c2f33; --run:#5b9bff; }
+    }
+    body { font:14px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif; background:var(--bg); color:var(--fg);
+           margin:0; padding:2rem 1rem 4rem; }
+    .wrap { max-width:1100px; margin:0 auto; }
+    header { display:flex; align-items:baseline; justify-content:space-between; gap:1rem; flex-wrap:wrap; }
+    h1 { font-size:1.6rem; margin:0; }
+    h2 { font-size:1.05rem; margin:1.8rem 0 .5rem; color:var(--muted); text-transform:uppercase; letter-spacing:.04em; }
+    a { color:inherit; }
+    .sub, .muted { color:var(--muted); font-size:.9rem; }
+    .card { background:var(--card); border:1px solid var(--border); border-radius:8px; padding:1rem 1.2rem; margin-top:1rem; }
+    .headline { font-size:1.15rem; }
+    table { width:100%; border-collapse:collapse; background:var(--card); border:1px solid var(--border);
+            border-radius:8px; overflow:hidden; }
+    th, td { text-align:left; padding:.5rem .7rem; border-bottom:1px solid var(--border); vertical-align:top; }
+    th { font-size:.8rem; text-transform:uppercase; letter-spacing:.04em; color:var(--muted); }
+    tr:last-child td { border-bottom:0; }
+    .pill { display:inline-block; padding:.05rem .55rem; border-radius:999px; font-size:.8rem; color:#fff; white-space:nowrap; }
+    .succeeded { background:var(--up); } .running { background:var(--run); } .failed { background:var(--down); }
+    .pending { background:var(--unknown); } .not-tracked { background:transparent; color:var(--muted); border:1px dashed var(--border); }
+    .over { color:var(--warn); font-weight:600; }
+    .num { font-variant-numeric:tabular-nums; white-space:nowrap; }
+    .err { color:var(--down); }
+  </style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div>
+      <h1>Cache status after releases</h1>
+      <div class="sub">Internal. Updated {{ s.now | fmt }} (UTC). Times are UTC. <a href="/">Service status</a> · <a href="/api/cache-status">JSON</a></div>
+    </div>
+  </header>
+
+  {% if s.kube_error %}<div class="card err">{{ s.kube_error }}</div>{% endif %}
+  {% if not s.release %}
+    <div class="card">{{ s.message or "No release data yet." }}</div>
+  {% else %}
+  {% set r = s.release %}
+  <div class="card">
+    <div class="headline">
+      Release <strong>{{ r.run }}</strong>, promoted {{ r.released_at | fmt }}.
+      {% if s.headline.all_tracked_done %}
+        <strong class="up">All tracked caches have caught up.</strong>
+      {% elif s.headline.predicted_all_done %}
+        Tracked caches expected to be caught up by <strong>{{ s.headline.predicted_all_done | fmt }}</strong>.
+      {% else %}
+        {% if s.headline.predicted_known_done %}Stages with an estimate finish by
+          <strong>{{ s.headline.predicted_known_done | fmt }}</strong>;{% endif %}
+        no estimate yet for: {{ s.headline.unknown_stages | join(", ") }} (no earlier runs).
+      {% endif %}
+    </div>
+    <div class="muted">Estimates use the median of earlier runs of each stage in the cluster; they are not promises.
+      Stages the cluster does not record are shown as not tracked rather than guessed.</div>
+  </div>
+
+  <h2>Current release</h2>
+  <table>
+    <tr><th>Stage</th><th>State</th><th>Started</th><th>Finished / expected</th><th>Took</th><th>Basis</th></tr>
+    {% for st in r.stages %}
+    <tr>
+      <td>{{ st.label }}{% if st.note %}<div class="muted">{{ st.note }}</div>{% endif %}
+          {% if st.run %}<div class="muted">{{ st.run }}</div>{% endif %}</td>
+      <td><span class="pill {{ st.state }}">{{ st.state | replace("-", " ") }}</span></td>
+      <td class="num">{% if st.started %}{{ st.started | fmt }}{% elif st.predicted_start %}~{{ st.predicted_start | fmt }}{% endif %}</td>
+      <td class="num">
+        {% if st.finished %}{{ st.finished | fmt }}
+        {% elif st.predicted_finish %}
+          {% if st.overrunning %}<span class="over">past its usual time</span>{% else %}~{{ st.predicted_finish | fmt }}{% endif %}
+        {% endif %}
+      </td>
+      <td class="num">{% if st.duration_min is not none %}{{ st.duration_min }} min{% endif %}</td>
+      <td class="muted">{{ st.basis or "" }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+
+  <h2>Solr collections now</h2>
+  <table>
+    <tr><th>Collection</th><th>Documents</th></tr>
+    {% for name, n in s.solr.items() %}
+    <tr><td>{{ name }}</td><td class="num">{% if n is none %}unavailable{% else %}{{ "{:,}".format(n) }}{% endif %}</td></tr>
+    {% endfor %}
+  </table>
+
+  <h2>Earlier releases</h2>
+  <table>
+    <tr><th>Release</th><th>Promoted</th>
+      {% for st in r.stages if st.key in ("pdb-load", "owlery", "vfb_json", "vfbquery_cache") %}<th>{{ st.key }} done</th>{% endfor %}
+      <th>vfb_json after release</th></tr>
+    {% for h in s.history %}
+    <tr>
+      <td>{{ h.run }}</td><td class="num">{{ h.released_at | fmt }}</td>
+      {% for st in h.stages if st.key in ("pdb-load", "owlery", "vfb_json", "vfbquery_cache") %}
+        <td class="num">{% if st.finished %}{{ st.finished | fmt }}{% elif st.state == "failed" %}failed{% endif %}</td>
+      {% endfor %}
+      <td class="num">{% if h.vfb_json_done_after_min is not none %}{{ (h.vfb_json_done_after_min / 60) | round(1) }} h{% endif %}</td>
+    </tr>
+    {% else %}
+    <tr><td colspan="7" class="muted">No earlier releases in the cluster's workflow history.</td></tr>
+    {% endfor %}
+  </table>
+  <div class="muted" style="margin-top:.5rem">Owlery restarts are only visible for the latest release (Kubernetes keeps no history of them).</div>
+  {% endif %}
+  <div class="muted" style="margin-top:2rem">vfb-status {{ version }}</div>
+</div>
+</body>
+</html>

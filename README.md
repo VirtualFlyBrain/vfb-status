@@ -31,6 +31,8 @@ The page auto-refreshes every 60 s. Endpoints:
 - `GET /api/neo4j` — latest snapshot per Neo4j database, including `db_status`, `node_count`, and any Neo4j start-up error
 - `GET /api/neo4j/history?service=<name>&since_seconds=86400&max_points=200` — down-sampled Neo4j time series
 - `GET /api/cluster` — Rancher cluster overview: hosts (with LB-coverage and DNS-ingress flags) and active services in the configured stacks
+- `GET /cache` — cache status after the latest release: stage states, predicted finish times, earlier releases (internal; needs in-cluster access to the Kubernetes API)
+- `GET /api/cache-status` — the same as JSON (`?refresh=true` skips the 60 s cache)
 - `GET /healthz` — liveness for Rancher / Docker
 - `POST /refresh` — force an immediate re-probe of every service
 

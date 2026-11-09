@@ -2,6 +2,22 @@
 
 All notable changes to vfb-status are recorded here. The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.16.0] — 2026-11-09
+
+### Added
+
+- **Cache status page (`/cache`, JSON at `/api/cache-status`).** After a release the page shows each cache stage
+  — release promote, pdb reload, pdb + pdb-analytics restart, Owlery restart, the vfb_json precompute, the
+  VFBquery cache refresh and the owl / v3-cached warm-ups — with its state, start and finish, and a predicted
+  finish for stages still to come. Predictions use the median of that stage's earlier runs in the cluster
+  (Argo keeps them); a stage with no earlier run says so and uses a default only where one is configured
+  (`CACHE_STATUS_DEFAULT_MIN_<STAGE>`). Stages the cluster does not record (the nginx warm-ups run by hand) are
+  shown as "not tracked", never guessed. Earlier releases are listed with how long each took, and the Solr
+  collection sizes are shown. Internal: it needs the pod's service account to read workflows, jobs and
+  deployments (see vfb-k8s `apps/status`); without one the page says so instead of failing.
+- Unit tests for the builder (`tests/`, `python -m pytest tests -q`), including a snapshot of the real cluster
+  objects from release 20261108.
+
 ## [0.15.1] — 2026-10-25
 
 ### Fixed
