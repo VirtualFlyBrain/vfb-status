@@ -41,13 +41,15 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
 
+from app import cache_status
+
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("vfb-status")
 
 CONFIG_PATH = Path(os.environ.get("CONFIG_PATH", "config/services.yml"))
 STATE_FILE = Path(os.environ.get("STATE_FILE", "")) if os.environ.get("STATE_FILE") else None
 CHECK_INTERVAL_SECONDS = int(os.environ.get("CHECK_INTERVAL_SECONDS", str(60 * 60)))
-VERSION = "0.15.1"
+VERSION = "0.16.0"
 USER_AGENT = f"vfb-status/{VERSION} (+https://github.com/VirtualFlyBrain/vfb-status)"
 
 # Maximum seconds one run_checks() cycle may take before we abandon stragglers
@@ -2761,6 +2763,19 @@ app = FastAPI(title="VFB status", lifespan=lifespan)
 templates = Jinja2Templates(directory="app/templates")
 
 
+def _fmt_ts(value: str | None) -> str:
+    """'2026-11-09T10:11:43+00:00' -> '09 Nov 10:11' (UTC)."""
+    if not value:
+        return ""
+    try:
+        return datetime.fromisoformat(value).astimezone(timezone.utc).strftime("%d %b %H:%M")
+    except ValueError:
+        return value
+
+
+templates.env.filters["fmt"] = _fmt_ts
+
+
 def _service_row(state: State, svc: ServiceSpec) -> dict[str, Any]:
     result = state.results.get(svc.name) or CheckResult(
         name=svc.name, group=svc.group, url=svc.url, status="unknown"
@@ -3184,6 +3199,19 @@ async def refresh(request: Request) -> JSONResponse:
     state: State = request.app.state.state
     await state.run_checks()
     return JSONResponse({"last_run": state.last_run, "count": len(state.results)})
+
+
+@app.get("/cache", response_class=HTMLResponse)
+async def cache_page(request: Request) -> HTMLResponse:
+    """Cache status after the latest release: stage-by-stage state and predicted finish times."""
+    status = await cache_status.get_status()
+    return templates.TemplateResponse("cache.html", {"request": request, "s": status, "version": VERSION})
+
+
+@app.get("/api/cache-status")
+async def api_cache_status(request: Request, refresh: bool = False) -> JSONResponse:
+    """The same data as /cache, as JSON. `?refresh=true` skips the 60 s cache."""
+    return JSONResponse(await cache_status.get_status(force=refresh))
 
 
 @app.get("/api/history")
