@@ -1,0 +1,1358 @@
+{
+ "deployments": [
+  {
+   "metadata": {
+    "generation": 89,
+    "name": "pdb",
+    "namespace": "pdb"
+   },
+   "spec": {
+    "replicas": 2
+   },
+   "status": {
+    "conditions": [
+     {
+      "lastTransitionTime": "2026-11-10T18:39:10Z",
+      "lastUpdateTime": "2026-11-10T18:39:10Z",
+      "message": "Deployment has minimum availability.",
+      "reason": "MinimumReplicasAvailable",
+      "status": "True",
+      "type": "Available"
+     },
+     {
+      "lastTransitionTime": "2026-11-13T22:07:07Z",
+      "lastUpdateTime": "2026-11-13T22:07:07Z",
+      "message": "ReplicaSet \"pdb-785f694b4c\" has successfully progressed.",
+      "reason": "NewReplicaSetAvailable",
+      "status": "True",
+      "type": "Progressing"
+     }
+    ],
+    "observedGeneration": 89,
+    "readyReplicas": 2,
+    "replicas": 2,
+    "updatedReplicas": 2
+   }
+  },
+  {
+   "metadata": {
+    "generation": 28,
+    "name": "pdb-analytics",
+    "namespace": "pdb"
+   },
+   "spec": {
+    "replicas": 1
+   },
+   "status": {
+    "conditions": [
+     {
+      "lastTransitionTime": "2026-10-24T10:45:53Z",
+      "lastUpdateTime": "2026-10-24T10:45:53Z",
+      "message": "Deployment has minimum availability.",
+      "reason": "MinimumReplicasAvailable",
+      "status": "True",
+      "type": "Available"
+     },
+     {
+      "lastTransitionTime": "2026-11-10T19:26:38Z",
+      "lastUpdateTime": "2026-11-10T19:26:38Z",
+      "message": "ReplicaSet \"pdb-analytics-7b89985b59\" has successfully progressed.",
+      "reason": "NewReplicaSetAvailable",
+      "status": "True",
+      "type": "Progressing"
+     }
+    ],
+    "observedGeneration": 28,
+    "readyReplicas": 1,
+    "replicas": 1,
+    "updatedReplicas": 1
+   }
+  },
+  {
+   "metadata": {
+    "generation": 3,
+    "name": "pdb-query-meter",
+    "namespace": "pdb"
+   },
+   "spec": {
+    "replicas": 1
+   },
+   "status": {
+    "conditions": [
+     {
+      "lastTransitionTime": "2026-10-14T04:01:37Z",
+      "lastUpdateTime": "2026-11-10T18:46:29Z",
+      "message": "ReplicaSet \"pdb-query-meter-798c6c5f58\" has successfully progressed.",
+      "reason": "NewReplicaSetAvailable",
+      "status": "True",
+      "type": "Progressing"
+     },
+     {
+      "lastTransitionTime": "2026-11-13T05:08:04Z",
+      "lastUpdateTime": "2026-11-13T05:08:04Z",
+      "message": "Deployment has minimum availability.",
+      "reason": "MinimumReplicasAvailable",
+      "status": "True",
+      "type": "Available"
+     }
+    ],
+    "observedGeneration": 3,
+    "readyReplicas": 1,
+    "replicas": 1,
+    "updatedReplicas": 1
+   }
+  },
+  {
+   "metadata": {
+    "generation": 2,
+    "name": "pdb-query-watchdog",
+    "namespace": "pdb"
+   },
+   "spec": {
+    "replicas": 1
+   },
+   "status": {
+    "conditions": [
+     {
+      "lastTransitionTime": "2026-11-13T22:25:52Z",
+      "lastUpdateTime": "2026-11-13T22:25:52Z",
+      "message": "Deployment has minimum availability.",
+      "reason": "MinimumReplicasAvailable",
+      "status": "True",
+      "type": "Available"
+     },
+     {
+      "lastTransitionTime": "2026-11-13T20:55:30Z",
+      "lastUpdateTime": "2026-11-13T22:25:52Z",
+      "message": "ReplicaSet \"pdb-query-watchdog-599f4b596f\" has successfully progressed.",
+      "reason": "NewReplicaSetAvailable",
+      "status": "True",
+      "type": "Progressing"
+     }
+    ],
+    "observedGeneration": 2,
+    "readyReplicas": 1,
+    "replicas": 1,
+    "updatedReplicas": 1
+   }
+  },
+  {
+   "metadata": {
+    "generation": 22,
+    "name": "owlery",
+    "namespace": "owlery"
+   },
+   "spec": {
+    "replicas": 4
+   },
+   "status": {
+    "conditions": [
+     {
+      "lastTransitionTime": "2026-10-11T17:08:25Z",
+      "lastUpdateTime": "2026-11-09T15:47:38Z",
+      "message": "ReplicaSet \"owlery-79564494f5\" has successfully progressed.",
+      "reason": "NewReplicaSetAvailable",
+      "status": "True",
+      "type": "Progressing"
+     },
+     {
+      "lastTransitionTime": "2026-11-15T05:22:58Z",
+      "lastUpdateTime": "2026-11-15T05:22:58Z",
+      "message": "Deployment has minimum availability.",
+      "reason": "MinimumReplicasAvailable",
+      "status": "True",
+      "type": "Available"
+     }
+    ],
+    "observedGeneration": 22,
+    "readyReplicas": 4,
+    "replicas": 4,
+    "updatedReplicas": 4
+   }
+  }
+ ],
+ "jobs": [],
+ "replicasets": [
+  {
+   "metadata": {
+    "creationTimestamp": "2026-11-09T14:44:45Z",
+    "name": "pdb-58758f8bd5",
+    "namespace": "pdb",
+    "ownerReferences": [
+     {
+      "kind": "Deployment",
+      "name": "pdb"
+     }
+    ]
+   },
+   "spec": {
+    "template": {
+     "metadata": {
+      "annotations": {
+       "kubectl.kubernetes.io/restartedAt": "2026-11-09T14:44:59Z"
+      }
+     }
+    }
+   }
+  },
+  {
+   "metadata": {
+    "creationTimestamp": "2026-11-09T23:56:03Z",
+    "name": "pdb-5b45bbb47f",
+    "namespace": "pdb",
+    "ownerReferences": [
+     {
+      "kind": "Deployment",
+      "name": "pdb"
+     }
+    ]
+   },
+   "spec": {
+    "template": {
+     "metadata": {
+      "annotations": {
+       "kubectl.kubernetes.io/restartedAt": "2026-11-09T23:56:16Z"
+      }
+     }
+    }
+   }
+  },
+  {
+   "metadata": {
+    "creationTimestamp": "2026-11-07T22:26:25Z",
+    "name": "pdb-5d6c59b89f",
+    "namespace": "pdb",
+    "ownerReferences": [
+     {
+      "kind": "Deployment",
+      "name": "pdb"
+     }
+    ]
+   },
+   "spec": {
+    "template": {
+     "metadata": {
+      "annotations": {
+       "kubectl.kubernetes.io/restartedAt": "2026-11-07T22:26:38Z"
+      }
+     }
+    }
+   }
+  },
+  {
+   "metadata": {
+    "creationTimestamp": "2026-11-07T00:40:11Z",
+    "name": "pdb-5d9b6bf779",
+    "namespace": "pdb",
+    "ownerReferences": [
+     {
+      "kind": "Deployment",
+      "name": "pdb"
+     }
+    ]
+   },
+   "spec": {
+    "template": {
+     "metadata": {
+      "annotations": {
+       "kubectl.kubernetes.io/restartedAt": "2026-11-07T00:40:23Z"
+      }
+     }
+    }
+   }
+  },
+  {
+   "metadata": {
+    "creationTimestamp": "2026-10-25T18:47:24Z",
+    "name": "pdb-689856664d",
+    "namespace": "pdb",
+    "ownerReferences": [
+     {
+      "kind": "Deployment",
+      "name": "pdb"
+     }
+    ]
+   },
+   "spec": {
+    "template": {
+     "metadata": {
+      "annotations": {
+       "kubectl.kubernetes.io/restartedAt": "2026-10-25T18:47:32Z"
+      }
+     }
+    }
+   }
+  },
+  {
+   "metadata": {
+    "creationTimestamp": "2026-11-10T18:44:38Z",
+    "name": "pdb-69879867d4",
+    "namespace": "pdb",
+    "ownerReferences": [
+     {
+      "kind": "Deployment",
+      "name": "pdb"
+     }
+    ]
+   },
+   "spec": {
+    "template": {
+     "metadata": {
+      "annotations": {
+       "kubectl.kubernetes.io/restartedAt": "2026-11-09T23:56:16Z"
+      }
+     }
+    }
+   }
+  },
+  {
+   "metadata": {
+    "creationTimestamp": "2026-11-13T20:55:30Z",
+    "name": "pdb-785f694b4c",
+    "namespace": "pdb",
+    "ownerReferences": [
+     {
+      "kind": "Deployment",
+      "name": "pdb"
+     }
+    ]
+   },
+   "spec": {
+    "template": {
+     "metadata": {
+      "annotations": {
+       "kubectl.kubernetes.io/restartedAt": "2026-11-09T23:56:16Z"
+      }
+     }
+    }
+   }
+  },
+  {
+   "metadata": {
+    "creationTimestamp": "2026-10-24T10:21:43Z",
+    "name": "pdb-78bcbc5475",
+    "namespace": "pdb",
+    "ownerReferences": [
+     {
+      "kind": "Deployment",
+      "name": "pdb"
+     }
+    ]
+   },
+   "spec": {
+    "template": {
+     "metadata": {
+      "annotations": {
+       "kubectl.kubernetes.io/restartedAt": "2026-10-20T09:17:01Z"
+      }
+     }
+    }
+   }
+  },
+  {
+   "metadata": {
+    "creationTimestamp": "2026-11-04T22:12:17Z",
+    "name": "pdb-7c99cdcd56",
+    "namespace": "pdb",
+    "ownerReferences": [
+     {
+      "kind": "Deployment",
+      "name": "pdb"
+     }
+    ]
+   },
+   "spec": {
+    "template": {
+     "metadata": {
+      "annotations": {
+       "kubectl.kubernetes.io/restartedAt": "2026-11-04T22:12:28Z"
+      }
+     }
+    }
+   }
+  },
+  {
+   "metadata": {
+    "creationTimestamp": "2026-10-24T15:14:33Z",
+    "name": "pdb-856f57b986",
+    "namespace": "pdb",
+    "ownerReferences": [
+     {
+      "kind": "Deployment",
+      "name": "pdb"
+     }
+    ]
+   },
+   "spec": {
+    "template": {
+     "metadata": {
+      "annotations": {
+       "kubectl.kubernetes.io/restartedAt": "2026-10-20T09:17:01Z"
+      }
+     }
+    }
+   }
+  },
+  {
+   "metadata": {
+    "creationTimestamp": "2026-10-28T18:59:28Z",
+    "name": "pdb-98fbb64cf",
+    "namespace": "pdb",
+    "ownerReferences": [
+     {
+      "kind": "Deployment",
+      "name": "pdb"
+     }
+    ]
+   },
+   "spec": {
+    "template": {
+     "metadata": {
+      "annotations": {
+       "kubectl.kubernetes.io/restartedAt": "2026-10-28T18:59:37Z"
+      }
+     }
+    }
+   }
+  },
+  {
+   "metadata": {
+    "creationTimestamp": "2026-10-28T18:59:28Z",
+    "name": "pdb-analytics-5448cb5d8",
+    "namespace": "pdb",
+    "ownerReferences": [
+     {
+      "kind": "Deployment",
+      "name": "pdb-analytics"
+     }
+    ]
+   },
+   "spec": {
+    "template": {
+     "metadata": {
+      "annotations": {
+       "kubectl.kubernetes.io/restartedAt": "2026-10-28T18:59:37Z"
+      }
+     }
+    }
+   }
+  },
+  {
+   "metadata": {
+    "creationTimestamp": "2026-11-07T22:26:25Z",
+    "name": "pdb-analytics-5b6977b47b",
+    "namespace": "pdb",
+    "ownerReferences": [
+     {
+      "kind": "Deployment",
+      "name": "pdb-analytics"
+     }
+    ]
+   },
+   "spec": {
+    "template": {
+     "metadata": {
+      "annotations": {
+       "kubectl.kubernetes.io/restartedAt": "2026-11-07T22:26:38Z"
+      }
+     }
+    }
+   }
+  },
+  {
+   "metadata": {
+    "creationTimestamp": "2026-10-23T13:40:20Z",
+    "name": "pdb-analytics-5f946b986c",
+    "namespace": "pdb",
+    "ownerReferences": [
+     {
+      "kind": "Deployment",
+      "name": "pdb-analytics"
+     }
+    ]
+   },
+   "spec": {
+    "template": {
+     "metadata": {
+      "annotations": {
+       "kubectl.kubernetes.io/restartedAt": "2026-10-20T09:17:01Z"
+      }
+     }
+    }
+   }
+  },
+  {
+   "metadata": {
+    "creationTimestamp": "2026-11-04T22:12:17Z",
+    "name": "pdb-analytics-64b74849d7",
+    "namespace": "pdb",
+    "ownerReferences": [
+     {
+      "kind": "Deployment",
+      "name": "pdb-analytics"
+     }
+    ]
+   },
+   "spec": {
+    "template": {
+     "metadata": {
+      "annotations": {
+       "kubectl.kubernetes.io/restartedAt": "2026-11-04T22:12:28Z"
+      }
+     }
+    }
+   }
+  },
+  {
+   "metadata": {
+    "creationTimestamp": "2026-11-09T14:44:45Z",
+    "name": "pdb-analytics-664576c878",
+    "namespace": "pdb",
+    "ownerReferences": [
+     {
+      "kind": "Deployment",
+      "name": "pdb-analytics"
+     }
+    ]
+   },
+   "spec": {
+    "template": {
+     "metadata": {
+      "annotations": {
+       "kubectl.kubernetes.io/restartedAt": "2026-11-09T14:44:59Z"
+      }
+     }
+    }
+   }
+  },
+  {
+   "metadata": {
+    "creationTimestamp": "2026-10-25T18:47:24Z",
+    "name": "pdb-analytics-74dd8cd4ff",
+    "namespace": "pdb",
+    "ownerReferences": [
+     {
+      "kind": "Deployment",
+      "name": "pdb-analytics"
+     }
+    ]
+   },
+   "spec": {
+    "template": {
+     "metadata": {
+      "annotations": {
+       "kubectl.kubernetes.io/restartedAt": "2026-10-25T18:47:32Z"
+      }
+     }
+    }
+   }
+  },
+  {
+   "metadata": {
+    "creationTimestamp": "2026-11-10T18:44:38Z",
+    "name": "pdb-analytics-7b89985b59",
+    "namespace": "pdb",
+    "ownerReferences": [
+     {
+      "kind": "Deployment",
+      "name": "pdb-analytics"
+     }
+    ]
+   },
+   "spec": {
+    "template": {
+     "metadata": {
+      "annotations": {
+       "kubectl.kubernetes.io/restartedAt": "2026-11-09T23:56:16Z"
+      }
+     }
+    }
+   }
+  },
+  {
+   "metadata": {
+    "creationTimestamp": "2026-10-24T10:21:43Z",
+    "name": "pdb-analytics-7d98b745bf",
+    "namespace": "pdb",
+    "ownerReferences": [
+     {
+      "kind": "Deployment",
+      "name": "pdb-analytics"
+     }
+    ]
+   },
+   "spec": {
+    "template": {
+     "metadata": {
+      "annotations": {
+       "kubectl.kubernetes.io/restartedAt": "2026-10-20T09:17:01Z"
+      }
+     }
+    }
+   }
+  },
+  {
+   "metadata": {
+    "creationTimestamp": "2026-11-09T23:56:03Z",
+    "name": "pdb-analytics-85577bd68d",
+    "namespace": "pdb",
+    "ownerReferences": [
+     {
+      "kind": "Deployment",
+      "name": "pdb-analytics"
+     }
+    ]
+   },
+   "spec": {
+    "template": {
+     "metadata": {
+      "annotations": {
+       "kubectl.kubernetes.io/restartedAt": "2026-11-09T23:56:16Z"
+      }
+     }
+    }
+   }
+  },
+  {
+   "metadata": {
+    "creationTimestamp": "2026-10-23T14:22:29Z",
+    "name": "pdb-analytics-bc7fdfc49",
+    "namespace": "pdb",
+    "ownerReferences": [
+     {
+      "kind": "Deployment",
+      "name": "pdb-analytics"
+     }
+    ]
+   },
+   "spec": {
+    "template": {
+     "metadata": {
+      "annotations": {
+       "kubectl.kubernetes.io/restartedAt": "2026-10-20T09:17:01Z"
+      }
+     }
+    }
+   }
+  },
+  {
+   "metadata": {
+    "creationTimestamp": "2026-11-07T00:40:11Z",
+    "name": "pdb-analytics-c99ff85f6",
+    "namespace": "pdb",
+    "ownerReferences": [
+     {
+      "kind": "Deployment",
+      "name": "pdb-analytics"
+     }
+    ]
+   },
+   "spec": {
+    "template": {
+     "metadata": {
+      "annotations": {
+       "kubectl.kubernetes.io/restartedAt": "2026-11-07T00:40:23Z"
+      }
+     }
+    }
+   }
+  },
+  {
+   "metadata": {
+    "creationTimestamp": "2026-10-14T04:19:56Z",
+    "name": "pdb-query-meter-764c7d7d8d",
+    "namespace": "pdb",
+    "ownerReferences": [
+     {
+      "kind": "Deployment",
+      "name": "pdb-query-meter"
+     }
+    ]
+   },
+   "spec": {
+    "template": {
+     "metadata": {
+      "annotations": {}
+     }
+    }
+   }
+  },
+  {
+   "metadata": {
+    "creationTimestamp": "2026-11-10T18:45:56Z",
+    "name": "pdb-query-meter-798c6c5f58",
+    "namespace": "pdb",
+    "ownerReferences": [
+     {
+      "kind": "Deployment",
+      "name": "pdb-query-meter"
+     }
+    ]
+   },
+   "spec": {
+    "template": {
+     "metadata": {
+      "annotations": {
+       "kubectl.kubernetes.io/restartedAt": "2026-11-10T18:45:39Z"
+      }
+     }
+    }
+   }
+  },
+  {
+   "metadata": {
+    "creationTimestamp": "2026-10-14T04:01:37Z",
+    "name": "pdb-query-meter-7d6f65f6b4",
+    "namespace": "pdb",
+    "ownerReferences": [
+     {
+      "kind": "Deployment",
+      "name": "pdb-query-meter"
+     }
+    ]
+   },
+   "spec": {
+    "template": {
+     "metadata": {
+      "annotations": {}
+     }
+    }
+   }
+  },
+  {
+   "metadata": {
+    "creationTimestamp": "2026-11-13T22:25:51Z",
+    "name": "pdb-query-watchdog-599f4b596f",
+    "namespace": "pdb",
+    "ownerReferences": [
+     {
+      "kind": "Deployment",
+      "name": "pdb-query-watchdog"
+     }
+    ]
+   },
+   "spec": {
+    "template": {
+     "metadata": {
+      "annotations": {}
+     }
+    }
+   }
+  },
+  {
+   "metadata": {
+    "creationTimestamp": "2026-11-13T20:55:30Z",
+    "name": "pdb-query-watchdog-69c9d7b69f",
+    "namespace": "pdb",
+    "ownerReferences": [
+     {
+      "kind": "Deployment",
+      "name": "pdb-query-watchdog"
+     }
+    ]
+   },
+   "spec": {
+    "template": {
+     "metadata": {
+      "annotations": {}
+     }
+    }
+   }
+  },
+  {
+   "metadata": {
+    "creationTimestamp": "2026-10-15T14:29:50Z",
+    "name": "owlery-58778d5f49",
+    "namespace": "owlery",
+    "ownerReferences": [
+     {
+      "kind": "Deployment",
+      "name": "owlery"
+     }
+    ]
+   },
+   "spec": {
+    "template": {
+     "metadata": {
+      "annotations": {
+       "kubectl.kubernetes.io/restartedAt": "2026-10-15T14:29:55Z"
+      }
+     }
+    }
+   }
+  },
+  {
+   "metadata": {
+    "creationTimestamp": "2026-10-24T15:13:08Z",
+    "name": "owlery-5cc55494cd",
+    "namespace": "owlery",
+    "ownerReferences": [
+     {
+      "kind": "Deployment",
+      "name": "owlery"
+     }
+    ]
+   },
+   "spec": {
+    "template": {
+     "metadata": {
+      "annotations": {
+       "kubectl.kubernetes.io/restartedAt": "2026-10-23T13:40:41Z"
+      }
+     }
+    }
+   }
+  },
+  {
+   "metadata": {
+    "creationTimestamp": "2026-10-25T18:15:47Z",
+    "name": "owlery-65997cf8b",
+    "namespace": "owlery",
+    "ownerReferences": [
+     {
+      "kind": "Deployment",
+      "name": "owlery"
+     }
+    ]
+   },
+   "spec": {
+    "template": {
+     "metadata": {
+      "annotations": {
+       "kubectl.kubernetes.io/restartedAt": "2026-10-25T18:15:55Z"
+      }
+     }
+    }
+   }
+  },
+  {
+   "metadata": {
+    "creationTimestamp": "2026-10-12T11:29:07Z",
+    "name": "owlery-685f89bc4",
+    "namespace": "owlery",
+    "ownerReferences": [
+     {
+      "kind": "Deployment",
+      "name": "owlery"
+     }
+    ]
+   },
+   "spec": {
+    "template": {
+     "metadata": {
+      "annotations": {
+       "kubectl.kubernetes.io/restartedAt": "2026-10-12T11:29:12Z"
+      }
+     }
+    }
+   }
+  },
+  {
+   "metadata": {
+    "creationTimestamp": "2026-11-04T21:39:05Z",
+    "name": "owlery-6bdd8bd68b",
+    "namespace": "owlery",
+    "ownerReferences": [
+     {
+      "kind": "Deployment",
+      "name": "owlery"
+     }
+    ]
+   },
+   "spec": {
+    "template": {
+     "metadata": {
+      "annotations": {
+       "kubectl.kubernetes.io/restartedAt": "2026-11-04T21:39:17Z"
+      }
+     }
+    }
+   }
+  },
+  {
+   "metadata": {
+    "creationTimestamp": "2026-10-28T18:24:33Z",
+    "name": "owlery-6dcfb7d697",
+    "namespace": "owlery",
+    "ownerReferences": [
+     {
+      "kind": "Deployment",
+      "name": "owlery"
+     }
+    ]
+   },
+   "spec": {
+    "template": {
+     "metadata": {
+      "annotations": {
+       "kubectl.kubernetes.io/restartedAt": "2026-10-28T18:24:42Z"
+      }
+     }
+    }
+   }
+  },
+  {
+   "metadata": {
+    "creationTimestamp": "2026-11-06T23:54:39Z",
+    "name": "owlery-777775c94",
+    "namespace": "owlery",
+    "ownerReferences": [
+     {
+      "kind": "Deployment",
+      "name": "owlery"
+     }
+    ]
+   },
+   "spec": {
+    "template": {
+     "metadata": {
+      "annotations": {
+       "kubectl.kubernetes.io/restartedAt": "2026-11-06T23:54:52Z"
+      }
+     }
+    }
+   }
+  },
+  {
+   "metadata": {
+    "creationTimestamp": "2026-10-23T13:40:34Z",
+    "name": "owlery-787f9d677",
+    "namespace": "owlery",
+    "ownerReferences": [
+     {
+      "kind": "Deployment",
+      "name": "owlery"
+     }
+    ]
+   },
+   "spec": {
+    "template": {
+     "metadata": {
+      "annotations": {
+       "kubectl.kubernetes.io/restartedAt": "2026-10-23T13:40:41Z"
+      }
+     }
+    }
+   }
+  },
+  {
+   "metadata": {
+    "creationTimestamp": "2026-11-09T15:29:24Z",
+    "name": "owlery-79564494f5",
+    "namespace": "owlery",
+    "ownerReferences": [
+     {
+      "kind": "Deployment",
+      "name": "owlery"
+     }
+    ]
+   },
+   "spec": {
+    "template": {
+     "metadata": {
+      "annotations": {
+       "kubectl.kubernetes.io/restartedAt": "2026-11-09T15:29:37Z"
+      }
+     }
+    }
+   }
+  },
+  {
+   "metadata": {
+    "creationTimestamp": "2026-10-20T09:17:05Z",
+    "name": "owlery-798f9cb7cc",
+    "namespace": "owlery",
+    "ownerReferences": [
+     {
+      "kind": "Deployment",
+      "name": "owlery"
+     }
+    ]
+   },
+   "spec": {
+    "template": {
+     "metadata": {
+      "annotations": {
+       "kubectl.kubernetes.io/restartedAt": "2026-10-20T09:17:12Z"
+      }
+     }
+    }
+   }
+  },
+  {
+   "metadata": {
+    "creationTimestamp": "2026-10-12T19:11:44Z",
+    "name": "owlery-bd859865d",
+    "namespace": "owlery",
+    "ownerReferences": [
+     {
+      "kind": "Deployment",
+      "name": "owlery"
+     }
+    ]
+   },
+   "spec": {
+    "template": {
+     "metadata": {
+      "annotations": {
+       "kubectl.kubernetes.io/restartedAt": "2026-10-12T11:29:12Z"
+      }
+     }
+    }
+   }
+  }
+ ],
+ "workflows": [
+  {
+   "metadata": {
+    "creationTimestamp": "2026-11-03T08:15:35Z",
+    "name": "vfb-data-release-20261030-owlery"
+   },
+   "status": {
+    "finishedAt": "2026-11-03T19:06:11Z",
+    "phase": "Failed",
+    "startedAt": "2026-11-03T08:15:25Z"
+   }
+  },
+  {
+   "metadata": {
+    "creationTimestamp": "2026-11-03T21:58:21Z",
+    "name": "vfb-data-release-20261030-polish"
+   },
+   "status": {
+    "finishedAt": "2026-11-04T07:01:06Z",
+    "phase": "Failed",
+    "startedAt": "2026-11-03T21:58:10Z"
+   }
+  },
+  {
+   "metadata": {
+    "creationTimestamp": "2026-11-04T07:02:05Z",
+    "name": "vfb-data-release-20261030-polish2"
+   },
+   "status": {
+    "finishedAt": "2026-11-04T07:07:03Z",
+    "phase": "Failed",
+    "startedAt": "2026-11-04T07:01:54Z"
+   }
+  },
+  {
+   "metadata": {
+    "creationTimestamp": "2026-11-04T07:15:19Z",
+    "name": "vfb-data-release-20261030-polish3"
+   },
+   "status": {
+    "finishedAt": "2026-11-04T12:47:24Z",
+    "phase": "Failed",
+    "startedAt": "2026-11-04T07:15:08Z"
+   }
+  },
+  {
+   "metadata": {
+    "creationTimestamp": "2026-11-04T14:07:44Z",
+    "name": "vfb-data-release-20261030-polish4"
+   },
+   "status": {
+    "finishedAt": "2026-11-04T20:13:46Z",
+    "phase": "Succeeded",
+    "startedAt": "2026-11-04T14:07:33Z"
+   }
+  },
+  {
+   "metadata": {
+    "creationTimestamp": "2026-11-05T06:23:24Z",
+    "name": "vfb-data-release-20261105"
+   },
+   "status": {
+    "finishedAt": "2026-11-06T10:11:00Z",
+    "phase": "Succeeded",
+    "startedAt": "2026-11-05T06:23:13Z"
+   }
+  },
+  {
+   "metadata": {
+    "creationTimestamp": "2026-11-06T14:01:29Z",
+    "name": "vfb-data-release-20261105-polish"
+   },
+   "status": {
+    "finishedAt": "2026-11-06T20:29:14Z",
+    "phase": "Succeeded",
+    "startedAt": "2026-11-06T14:01:18Z"
+   }
+  },
+  {
+   "metadata": {
+    "creationTimestamp": "2026-11-07T14:19:41Z",
+    "name": "vfb-data-release-20261105-polish2"
+   },
+   "status": {
+    "finishedAt": "2026-11-07T20:48:34Z",
+    "phase": "Succeeded",
+    "startedAt": "2026-11-07T14:19:30Z"
+   }
+  },
+  {
+   "metadata": {
+    "creationTimestamp": "2026-11-08T04:54:52Z",
+    "name": "vfb-data-release-20261108"
+   },
+   "status": {
+    "finishedAt": "2026-11-09T02:05:07Z",
+    "phase": "Succeeded",
+    "startedAt": "2026-11-08T04:54:40Z"
+   }
+  },
+  {
+   "metadata": {
+    "creationTimestamp": "2026-11-09T15:25:08Z",
+    "name": "vfb-data-release-20261109-polish"
+   },
+   "status": {
+    "finishedAt": "2026-11-09T22:10:00Z",
+    "phase": "Succeeded",
+    "startedAt": "2026-11-09T15:24:56Z"
+   }
+  },
+  {
+   "metadata": {
+    "creationTimestamp": "2026-11-14T11:16:43Z",
+    "name": "vfb-data-release-20261114"
+   },
+   "status": {
+    "finishedAt": "2026-11-14T13:41:32Z",
+    "phase": "Failed",
+    "startedAt": "2026-11-14T11:16:11Z"
+   }
+  },
+  {
+   "metadata": {
+    "creationTimestamp": "2026-11-14T14:51:28Z",
+    "name": "vfb-data-release-20261114-2"
+   },
+   "status": {
+    "finishedAt": "2026-11-14T21:31:58Z",
+    "phase": "Failed",
+    "startedAt": "2026-11-14T14:50:56Z"
+   }
+  },
+  {
+   "metadata": {
+    "creationTimestamp": "2026-11-14T21:33:36Z",
+    "name": "vfb-data-release-20261114-3"
+   },
+   "status": {
+    "phase": "Running",
+    "startedAt": "2026-11-14T21:33:04Z"
+   }
+  },
+  {
+   "metadata": {
+    "creationTimestamp": "2026-11-12T22:16:59Z",
+    "name": "vfb-data-release-4ppbp"
+   },
+   "status": {
+    "finishedAt": "2026-11-13T19:34:42Z",
+    "phase": "Failed",
+    "startedAt": "2026-11-12T22:16:45Z"
+   }
+  },
+  {
+   "metadata": {
+    "creationTimestamp": "2026-11-13T21:10:15Z",
+    "name": "vfb-data-release-57hn9"
+   },
+   "status": {
+    "finishedAt": "2026-11-14T03:38:39Z",
+    "phase": "Succeeded",
+    "startedAt": "2026-11-13T21:09:43Z"
+   }
+  },
+  {
+   "metadata": {
+    "creationTimestamp": "2026-11-12T13:19:40Z",
+    "name": "vfb-data-release-fjwdl"
+   },
+   "status": {
+    "finishedAt": "2026-11-12T18:21:36Z",
+    "phase": "Failed",
+    "startedAt": "2026-11-12T13:19:26Z"
+   }
+  },
+  {
+   "metadata": {
+    "creationTimestamp": "2026-11-11T23:25:50Z",
+    "name": "vfb-data-release-hj2g5"
+   },
+   "status": {
+    "finishedAt": "2026-11-11T23:41:22Z",
+    "phase": "Failed",
+    "startedAt": "2026-11-11T23:25:36Z"
+   }
+  },
+  {
+   "metadata": {
+    "creationTimestamp": "2026-11-12T12:30:02Z",
+    "name": "vfb-data-release-lrljh"
+   },
+   "status": {
+    "finishedAt": "2026-11-12T12:40:17Z",
+    "phase": "Failed",
+    "startedAt": "2026-11-12T12:29:48Z"
+   }
+  },
+  {
+   "metadata": {
+    "creationTimestamp": "2026-11-04T22:42:19Z",
+    "name": "vfb-json-precompute-20261030"
+   },
+   "status": {
+    "finishedAt": "2026-11-09T15:30:43Z",
+    "phase": "Failed",
+    "startedAt": "2026-11-04T22:42:08Z"
+   }
+  },
+  {
+   "metadata": {
+    "creationTimestamp": "2026-11-07T01:09:05Z",
+    "name": "vfb-json-precompute-20261105"
+   },
+   "status": {
+    "finishedAt": "2026-11-07T19:57:25Z",
+    "phase": "Succeeded",
+    "startedAt": "2026-11-07T01:08:53Z"
+   }
+  },
+  {
+   "metadata": {
+    "creationTimestamp": "2026-11-09T15:31:32Z",
+    "name": "vfb-json-precompute-20261108"
+   },
+   "status": {
+    "finishedAt": "2026-11-12T14:31:28Z",
+    "phase": "Failed",
+    "startedAt": "2026-11-09T15:31:18Z"
+   }
+  },
+  {
+   "metadata": {
+    "creationTimestamp": "2026-11-12T14:31:55Z",
+    "name": "vfb-json-precompute-20261109"
+   },
+   "status": {
+    "finishedAt": "2026-11-13T07:15:59Z",
+    "phase": "Succeeded",
+    "startedAt": "2026-11-12T14:31:41Z"
+   }
+  },
+  {
+   "metadata": {
+    "creationTimestamp": "2026-11-04T21:29:48Z",
+    "name": "vfb-release-20261030"
+   },
+   "status": {
+    "finishedAt": "2026-11-04T21:35:27Z",
+    "phase": "Succeeded",
+    "startedAt": "2026-11-04T21:29:37Z"
+   }
+  },
+  {
+   "metadata": {
+    "creationTimestamp": "2026-11-06T23:48:17Z",
+    "name": "vfb-release-20261105"
+   },
+   "status": {
+    "finishedAt": "2026-11-06T23:54:05Z",
+    "phase": "Succeeded",
+    "startedAt": "2026-11-06T23:48:05Z"
+   }
+  },
+  {
+   "metadata": {
+    "creationTimestamp": "2026-11-09T10:05:53Z",
+    "name": "vfb-release-20261108"
+   },
+   "status": {
+    "finishedAt": "2026-11-09T10:11:43Z",
+    "phase": "Succeeded",
+    "startedAt": "2026-11-09T10:05:40Z"
+   }
+  },
+  {
+   "metadata": {
+    "creationTimestamp": "2026-11-09T22:59:38Z",
+    "name": "vfb-release-20261109"
+   },
+   "status": {
+    "finishedAt": "2026-11-09T23:06:15Z",
+    "phase": "Succeeded",
+    "startedAt": "2026-11-09T22:59:25Z"
+   }
+  },
+  {
+   "metadata": {
+    "creationTimestamp": "2026-11-15T11:11:14Z",
+    "name": "vfbquery-force-refresh-6rpzt"
+   },
+   "status": {
+    "finishedAt": "2026-11-15T11:11:56Z",
+    "phase": "Succeeded",
+    "startedAt": "2026-11-15T11:10:42Z"
+   }
+  },
+  {
+   "metadata": {
+    "creationTimestamp": "2026-11-15T11:11:16Z",
+    "name": "vfbquery-force-refresh-6wnkf"
+   },
+   "status": {
+    "finishedAt": "2026-11-15T11:11:03Z",
+    "phase": "Succeeded",
+    "startedAt": "2026-11-15T11:10:43Z"
+   }
+  },
+  {
+   "metadata": {
+    "creationTimestamp": "2026-11-15T11:07:29Z",
+    "name": "vfbquery-force-refresh-f8vlw"
+   },
+   "status": {
+    "finishedAt": "2026-11-15T11:07:17Z",
+    "phase": "Succeeded",
+    "startedAt": "2026-11-15T11:06:57Z"
+   }
+  },
+  {
+   "metadata": {
+    "creationTimestamp": "2026-11-15T11:11:13Z",
+    "name": "vfbquery-force-refresh-hhvfw"
+   },
+   "status": {
+    "finishedAt": "2026-11-15T11:11:01Z",
+    "phase": "Succeeded",
+    "startedAt": "2026-11-15T11:10:41Z"
+   }
+  },
+  {
+   "metadata": {
+    "creationTimestamp": "2026-11-15T11:11:17Z",
+    "name": "vfbquery-force-refresh-jv477"
+   },
+   "status": {
+    "finishedAt": "2026-11-15T11:11:59Z",
+    "phase": "Succeeded",
+    "startedAt": "2026-11-15T11:10:44Z"
+   }
+  },
+  {
+   "metadata": {
+    "creationTimestamp": "2026-11-15T11:07:31Z",
+    "name": "vfbquery-force-refresh-lxs7p"
+   },
+   "status": {
+    "finishedAt": "2026-11-15T11:07:30Z",
+    "phase": "Succeeded",
+    "startedAt": "2026-11-15T11:06:59Z"
+   }
+  }
+ ]
+}

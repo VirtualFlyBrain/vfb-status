@@ -29,6 +29,7 @@
     .pill { display:inline-block; padding:.05rem .55rem; border-radius:999px; font-size:.8rem; color:#fff; white-space:nowrap; }
     .succeeded { background:var(--up); } .running { background:var(--run); } .failed { background:var(--down); }
     .pending { background:var(--unknown); } .not-tracked { background:transparent; color:var(--muted); border:1px dashed var(--border); }
+    .no-record { background:var(--warn); }
     .over { color:var(--warn); font-weight:600; }
     .num { font-variant-numeric:tabular-nums; white-space:nowrap; }
     .err { color:var(--down); }
@@ -53,6 +54,10 @@
       Release <strong>{{ r.run }}</strong>, promoted {{ r.released_at | fmt }}.
       {% if s.headline.all_tracked_done %}
         <strong class="up">All tracked caches have caught up.</strong>
+      {% elif s.headline.no_record_stages %}
+        <strong class="over">Not confirmed caught up:</strong> no run on record for
+        {{ s.headline.no_record_stages | join(", ") }}. Either it has not been done for this release or its record
+        has expired; no estimate is given.
       {% elif s.headline.predicted_all_done %}
         Tracked caches expected to be caught up by <strong>{{ s.headline.predicted_all_done | fmt }}</strong>.
       {% else %}
@@ -62,7 +67,8 @@
       {% endif %}
     </div>
     <div class="muted">Estimates use the median of earlier runs of each stage in the cluster; they are not promises.
-      Stages the cluster does not record are shown as not tracked rather than guessed.</div>
+      Stages the cluster does not record are shown as not tracked rather than guessed. A pdb or Owlery restart counts
+      only if it was a <code>rollout restart</code>, not a rollout from a config change.</div>
   </div>
 
   <h2>Current release</h2>
@@ -76,6 +82,7 @@
       <td class="num">{% if st.started %}{{ st.started | fmt }}{% elif st.predicted_start %}~{{ st.predicted_start | fmt }}{% endif %}</td>
       <td class="num">
         {% if st.finished %}{{ st.finished | fmt }}
+        {% elif st.state == "succeeded" %}<span class="muted">not recorded (a later rollout replaced it)</span>
         {% elif st.predicted_finish %}
           {% if st.overrunning %}<span class="over">past its usual time</span>{% else %}~{{ st.predicted_finish | fmt }}{% endif %}
         {% endif %}
@@ -103,7 +110,7 @@
     <tr>
       <td>{{ h.run }}</td><td class="num">{{ h.released_at | fmt }}</td>
       {% for st in h.stages if st.key in ("pdb-load", "owlery", "vfb_json", "vfbquery_cache") %}
-        <td class="num">{% if st.finished %}{{ st.finished | fmt }}{% elif st.state == "failed" %}failed{% endif %}</td>
+        <td class="num">{% if st.finished %}{{ st.finished | fmt }}{% elif st.state == "succeeded" %}started {{ st.started | fmt }}{% elif st.state == "failed" %}failed{% elif st.state == "no-record" %}<span class="muted">no record</span>{% endif %}</td>
       {% endfor %}
       <td class="num">{% if h.vfb_json_done_after_min is not none %}{{ (h.vfb_json_done_after_min / 60) | round(1) }} h{% endif %}</td>
     </tr>
@@ -111,7 +118,8 @@
     <tr><td colspan="7" class="muted">No earlier releases in the cluster's workflow history.</td></tr>
     {% endfor %}
   </table>
-  <div class="muted" style="margin-top:.5rem">Owlery restarts are only visible for the latest release (Kubernetes keeps no history of them).</div>
+  <div class="muted" style="margin-top:.5rem">Restarts of earlier releases show their start only (the finish of a superseded rollout is not kept).
+    "No record" means nothing was found for that release: not done, or the record has expired (loader Jobs are deleted after their TTL).</div>
   {% endif %}
   <div class="muted" style="margin-top:2rem">vfb-status {{ version }}</div>
 </div>
