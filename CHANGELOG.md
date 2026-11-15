@@ -2,6 +2,24 @@
 
 All notable changes to vfb-status are recorded here. The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.16.1] — 2026-11-15
+
+### Fixed
+
+- **Cache status page no longer claims more than the cluster shows.** Checked against release 20261109 six days
+  after it was promoted, 0.16.0 had two rows wrong and a headline that was always "caught up in 30 minutes":
+  - *Any rollout counted as the release's restart.* A pdb rollout from a config change on 13 Nov was shown as
+    the release's "pdb + pdb-analytics restart". Only a `kubectl rollout restart` counts now: a ReplicaSet whose
+    `kubectl.kubernetes.io/restartedAt` annotation matches its creation time. Old ReplicaSets stay in the cluster,
+    so the real restart (9 Nov 23:56) and those of earlier releases are found too; a superseded restart shows its
+    start, with the finish marked as not recorded.
+  - *A stage with nothing on record stayed "pending" with a sliding estimate.* The pdb loader's Job is deleted
+    after its TTL, so "pdb data reload" read as pending, expected 30 minutes from now, for ever. A stage with no
+    run `CACHE_STATUS_OVERDUE_HOURS` (default 12) after the stage it follows is now "no record" (not run, or the
+    record has expired), with no predicted time, and the headline says which stages are unconfirmed instead of
+    giving a time. Earlier releases never show "pending".
+- Tests: a second snapshot of the real cluster objects (15 Nov, release 20261109) and cases for both rules.
+
 ## [0.16.0] — 2026-11-09
 
 ### Added

@@ -14,7 +14,9 @@ def wf(name, start, end=None, phase="Succeeded"):
     return {"metadata": {"name": name}, "status": st}
 
 
-def dep(ns, name, gen, ready, want, started_rs, done_at=None):
+def dep(ns, name, gen, ready, want, started_rs, done_at=None, restart=True):
+    """A deployment and its newest ReplicaSet. restart=True: made by `kubectl rollout restart` (the annotation
+    matches the creation time); restart=False: a manifest change, which keeps an older annotation."""
     conds = [{"type": "Progressing", "status": "True", "reason": "NewReplicaSetAvailable" if done_at else "ReplicaSetUpdated",
               "lastUpdateTime": done_at or started_rs}]
     return ({"metadata": {"namespace": ns, "name": name, "generation": gen},
@@ -22,7 +24,9 @@ def dep(ns, name, gen, ready, want, started_rs, done_at=None):
              "status": {"observedGeneration": gen, "updatedReplicas": ready, "readyReplicas": ready,
                         "replicas": want if ready == want else want + 1, "conditions": conds}},
             {"metadata": {"namespace": ns, "name": name + "-abc", "creationTimestamp": started_rs,
-                          "ownerReferences": [{"kind": "Deployment", "name": name}]}})
+                          "ownerReferences": [{"kind": "Deployment", "name": name}]},
+             "spec": {"template": {"metadata": {"annotations": {
+                 "kubectl.kubernetes.io/restartedAt": started_rs if restart else "2026-10-01T00:00:00Z"}}}}})
 
 
 def job(name, start, end=None):
@@ -133,3 +137,58 @@ def test_real_cluster_snapshot_2026_11_09():
     runs = {h["run"]: h for h in out["history"]}
     assert runs["20261030"]["vfb_json_done_after_min"] is None
     assert [s["state"] for s in runs["20261030"]["stages"] if s["key"] == "vfb_json"] == ["failed"]
+
+
+def test_manifest_change_rollout_is_not_a_release_restart():
+    """0.16.0 counted any rollout after the release: a config change on 13 Nov showed as release 20261109's
+    pdb restart. Only a `rollout restart` ReplicaSet counts."""
+    d, rs = dep("owlery", "owlery", 3, 4, 4, "2026-11-09T10:50:00Z", "2026-11-09T12:30:00Z", restart=False)
+    raw = base_raw()
+    raw["deployments"], raw["replicasets"] = [d], [rs]
+    st = {s["key"]: s for s in cs.build_status(raw, NOW)["release"]["stages"]}["owlery"]
+    assert st["state"] == "pending" and st["run"] is None
+
+
+def test_superseded_restart_is_done_without_a_finish_time():
+    d, rs_new = dep("owlery", "owlery", 4, 4, 4, "2026-11-09T14:00:00Z", "2026-11-09T14:20:00Z", restart=False)
+    _, rs_old = dep("owlery", "owlery", 3, 4, 4, "2026-11-09T10:50:00Z")
+    rs_old["metadata"]["name"] = "owlery-old"
+    raw = base_raw()
+    raw["deployments"], raw["replicasets"] = [d], [rs_old, rs_new]
+    st = {s["key"]: s for s in cs.build_status(raw, NOW)["release"]["stages"]}["owlery"]
+    assert st["state"] == "succeeded" and st["started"].startswith("2026-11-09T10:50") and st["finished"] is None
+
+
+def test_pending_becomes_no_record_after_the_grace_period():
+    raw = base_raw()
+    raw["jobs"] = []  # the loader Job has been deleted (ttlSecondsAfterFinished)
+    soon = {s["key"]: s for s in cs.build_status(raw, NOW)["release"]["stages"]}["pdb-load"]
+    assert soon["state"] == "pending" and soon.get("predicted_finish")  # 6 h after the release: still plausible
+    late_now = datetime(2026, 11, 15, 14, 0, tzinfo=timezone.utc)
+    out = cs.build_status(raw, late_now)
+    late = {s["key"]: s for s in out["release"]["stages"]}["pdb-load"]
+    assert late["state"] == "no-record" and late.get("predicted_finish") is None
+    assert "pdb-load" in out["headline"]["no_record_stages"]
+    assert out["headline"]["predicted_all_done"] is None  # no estimate that slides forward for ever
+
+
+def test_real_cluster_snapshot_2026_11_15():
+    """Release 20261109 six days on. The loader Job is gone, pdb was restarted for the release on 9 Nov 23:56
+    and rolled again for a config change on 13 Nov (must not count), and Owlery was last restarted before the
+    release was promoted."""
+    import json
+    raw = json.loads((Path(__file__).parent / "fixtures" / "cluster_2026-11-15.json").read_text())
+    out = cs.build_status(raw, datetime(2026, 11, 15, 14, 12, tzinfo=timezone.utc))
+    stages = {s["key"]: s for s in out["release"]["stages"]}
+    assert out["release"]["run"] == "20261109"
+    assert stages["pdb-load"]["state"] == "no-record"
+    assert stages["pdb-rollout"]["state"] == "succeeded"
+    assert stages["pdb-rollout"]["started"].startswith("2026-11-09T23:56") and stages["pdb-rollout"]["finished"] is None
+    assert stages["owlery"]["state"] == "no-record"
+    assert stages["vfb_json"]["state"] == "succeeded" and stages["vfbquery_cache"]["state"] == "succeeded"
+    assert out["headline"]["all_tracked_done"] is False
+    assert out["headline"]["no_record_stages"] == ["pdb-load", "owlery"]
+    assert out["headline"]["predicted_all_done"] is None
+    hist = {h["run"]: {s["key"]: s for s in h["stages"]} for h in out["history"]}
+    assert hist["20261108"]["owlery"]["started"].startswith("2026-11-09T15:29")
+    assert all(s["state"] != "pending" for h in hist.values() for s in h.values())

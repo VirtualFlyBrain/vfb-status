@@ -14,6 +14,16 @@ Predictions are honest estimates, not promises. A stage's duration is the median
 in the cluster (Argo keeps them); a stage with no history uses a default from the environment and is marked
 as such. Stages the cluster does not record (the owl / v3-cached nginx warm-ups are run by hand) are shown as
 "not tracked" rather than guessed.
+
+Two rules keep the page from claiming more than the cluster shows (both were wrong in 0.16.0):
+
+* A pdb or Owlery restart is only a release restart if it was a ``kubectl rollout restart``: a ReplicaSet whose
+  ``kubectl.kubernetes.io/restartedAt`` annotation matches its creation time. A rollout caused by a manifest
+  change (a new env var, an image bump) keeps the old annotation and is not counted. Old ReplicaSets stay in the
+  cluster (revisionHistoryLimit), so earlier releases' restarts are visible too, though only their start time.
+* A stage with no run on record is "pending" only for OVERDUE_HOURS after the stage it follows finished. After
+  that it is "no record" (it has not run, or its record has expired: finished Jobs are deleted after their TTL)
+  and gets no predicted time, so the headline never shows an estimate that slides forward for ever.
 """
 
 from __future__ import annotations
@@ -38,6 +48,9 @@ CACHE_TTL_SECONDS = float(os.environ.get("CACHE_STATUS_TTL", "60"))
 SOLR_URL = os.environ.get("CACHE_STATUS_SOLR_URL", "https://solr.k8s.virtualflybrain.org/solr").rstrip("/")
 PIPELINE_NS = os.environ.get("CACHE_STATUS_PIPELINE_NS", "pipeline")
 HISTORY_RUNS = int(os.environ.get("CACHE_STATUS_HISTORY_RUNS", "5"))
+OVERDUE_HOURS = float(os.environ.get("CACHE_STATUS_OVERDUE_HOURS", "12"))
+RESTART_ANNOTATION = "kubectl.kubernetes.io/restartedAt"
+RESTART_MATCH_SECONDS = 300  # restartedAt is written a few seconds after the ReplicaSet is created
 
 
 @dataclass(frozen=True)
@@ -152,10 +165,21 @@ def _job_runs(jobs: list[dict[str, Any]], ns_prefix: str) -> list[Run]:
     return out
 
 
+def _is_restart(rs: dict[str, Any]) -> bool:
+    """True for a ReplicaSet made by `kubectl rollout restart` (see the module docstring)."""
+    created = parse_ts(rs["metadata"].get("creationTimestamp"))
+    ann = (rs.get("spec", {}).get("template", {}).get("metadata", {}).get("annotations") or {})
+    restarted = parse_ts(ann.get(RESTART_ANNOTATION))
+    return bool(created and restarted and abs((created - restarted).total_seconds()) <= RESTART_MATCH_SECONDS)
+
+
 def _deployment_runs(deployments: list[dict[str, Any]], replicasets: list[dict[str, Any]],
                      ns_name: str) -> list[Run]:
-    """The latest rollout of a deployment: starts when its newest ReplicaSet was created, ends when the
-    Progressing condition reports NewReplicaSetAvailable on a fully updated, fully ready deployment."""
+    """Every `rollout restart` of a deployment that the cluster still has a ReplicaSet for, oldest first.
+
+    A restart starts when its ReplicaSet was created. Only the newest ReplicaSet's finish is known (the
+    deployment's Progressing condition reports NewReplicaSetAvailable once it is fully updated and ready); an
+    older restart was superseded by a later rollout, so it is reported as done with no finish time."""
     ns, _, name = ns_name.partition("/")
     dep = next((d for d in deployments if d["metadata"].get("namespace") == ns and d["metadata"]["name"] == name),
                None)
@@ -168,7 +192,6 @@ def _deployment_runs(deployments: list[dict[str, Any]], replicasets: list[dict[s
                 for o in rs["metadata"].get("ownerReferences", []))
     ]
     owned.sort(key=lambda rs: rs["metadata"].get("creationTimestamp", ""))
-    started = parse_ts(owned[-1]["metadata"].get("creationTimestamp")) if owned else None
     st = dep.get("status", {})
     want = dep.get("spec", {}).get("replicas", 1)
     settled = (
@@ -177,13 +200,22 @@ def _deployment_runs(deployments: list[dict[str, Any]], replicasets: list[dict[s
         and st.get("readyReplicas", 0) == want
         and st.get("replicas", 0) == want
     )
-    finished = None
-    for cond in st.get("conditions", []):
-        if cond.get("type") == "Progressing" and cond.get("reason") == "NewReplicaSetAvailable" and settled:
-            finished = parse_ts(cond.get("lastUpdateTime"))
-    failed = any(c.get("type") == "Progressing" and c.get("status") == "False" for c in st.get("conditions", []))
-    phase = "succeeded" if finished else ("failed" if failed else "running")
-    return [Run(name, started, finished, phase)]
+    out: list[Run] = []
+    for idx, rs in enumerate(owned):
+        if not _is_restart(rs):
+            continue
+        started = parse_ts(rs["metadata"].get("creationTimestamp"))
+        if idx < len(owned) - 1:
+            out.append(Run(name, started, None, "succeeded"))  # superseded: finish not recorded
+            continue
+        finished = None
+        for cond in st.get("conditions", []):
+            if cond.get("type") == "Progressing" and cond.get("reason") == "NewReplicaSetAvailable" and settled:
+                finished = parse_ts(cond.get("lastUpdateTime"))
+        failed = any(c.get("type") == "Progressing" and c.get("status") == "False"
+                     for c in st.get("conditions", []))
+        out.append(Run(name, started, finished, "succeeded" if finished else ("failed" if failed else "running")))
+    return out
 
 
 def _runs_for(stage: Stage, raw: dict[str, Any]) -> list[Run]:
@@ -240,10 +272,6 @@ def build_status(raw: dict[str, Any], now: datetime | None = None) -> dict[str, 
                 run: Run | None = rel
             elif s.kind == "manual":
                 run = None
-            elif s.kind == "deployment":
-                # only the latest rollout is visible, so only the newest release can show it
-                r = per_stage_runs[s.key][0] if per_stage_runs[s.key] else None
-                run = r if (live and r and r.started and r.started >= t0 - timedelta(minutes=1)) else None
             else:
                 run = _latest_in_window(per_stage_runs[s.key], t0, nxt)
             st: dict[str, Any] = {"key": s.key, "label": s.label, "note": s.note, "after": list(s.after),
@@ -256,6 +284,7 @@ def build_status(raw: dict[str, Any], now: datetime | None = None) -> dict[str, 
                           finished=None, duration_min=None)
             stages[s.key] = st
 
+        _mark_no_record(stages, t0, now, nxt)
         if live:
             _predict(stages, medians, now)
         done_ends = [parse_ts(stages[k]["finished"]) for k in ("vfb_json", "vfbquery_cache", "owlery")
@@ -278,16 +307,23 @@ def build_status(raw: dict[str, Any], now: datetime | None = None) -> dict[str, 
 
     # headline: when are the caches expected to be fully caught up?
     tracked = [s for s in current["stages"] if s["state"] != "not-tracked"]
-    ends = [parse_ts(s.get("predicted_finish") or s.get("finished")) for s in tracked]
-    unknown = any(e is None for e in ends)
+    open_stages = [s for s in tracked if s["state"] not in ("succeeded", "no-record")]
+    ends = [parse_ts(s.get("predicted_finish") or s.get("finished")) for s in tracked
+            if s["state"] != "no-record" and (s["state"] != "succeeded" or s.get("finished"))]
+    unknown = any(not (s.get("predicted_finish") or s.get("finished")) for s in open_stages)
     all_done = all(s["state"] == "succeeded" for s in tracked)
     known = [e for e in ends if e]
+    no_record = [s["key"] for s in tracked if s["state"] == "no-record"]
     headline = {
         "all_tracked_done": all_done,
-        "predicted_all_done": None if (unknown or not ends) else iso(max(known)),
+        # stages with nothing on record long after they were due: no estimate is offered for these
+        "no_record_stages": no_record,
+        "predicted_all_done": None if (unknown or not ends or no_record) else iso(max(known)),
         # the latest finish among stages that do have an estimate (a lower bound when others have none)
         "predicted_known_done": iso(max(known)) if known else None,
-        "unknown_stages": [s["key"] for s in tracked if not (s.get("predicted_finish") or s.get("finished"))],
+        "unknown_stages": [s["key"] for s in tracked
+                           if s["state"] not in ("succeeded", "no-record")
+                           and not (s.get("predicted_finish") or s.get("finished"))],
     }
     return {
         "ok": True,
@@ -302,6 +338,31 @@ def build_status(raw: dict[str, Any], now: datetime | None = None) -> dict[str, 
     }
 
 
+def _mark_no_record(stages: dict[str, dict[str, Any]], t0: datetime, now: datetime,
+                    next_release: datetime | None) -> None:
+    """Turn "pending" into "no-record" for a stage with nothing recorded long after it was due.
+
+    Due means: every stage it follows has finished (or itself has no record), counted from the latest known
+    finish among them, or from the release promotion when none is known. Past OVERDUE_HOURS, or once a newer
+    release has been promoted, "pending" would be a guess: the stage either never ran or its record has gone."""
+    for s in STAGES:  # dependency order
+        st = stages[s.key]
+        if st["state"] != "pending":
+            continue
+        if next_release is not None:
+            st["state"] = "no-record"  # a newer release has been promoted: this one will not get a run now
+            continue
+        deps = [stages[a] for a in s.after]
+        if any(d["state"] in ("pending", "running", "failed") for d in deps):
+            continue  # still waiting on something that is visibly not done
+        known = [parse_ts(d.get("finished") or d.get("started")) for d in deps if d["state"] == "succeeded"]
+        anchor = max([t0] + [k for k in known if k])
+        if now - anchor > timedelta(hours=OVERDUE_HOURS):
+            st["state"] = "no-record"
+            st["basis"] = (f"nothing recorded within {OVERDUE_HOURS:g} h of the previous stage: "
+                           "not run, or its record has expired")
+
+
 def _predict(stages: dict[str, dict[str, Any]], medians: dict[str, tuple[float | None, int]],
              now: datetime) -> None:
     """Fill predicted_start / predicted_finish / basis for every stage that has not finished."""
@@ -309,9 +370,10 @@ def _predict(stages: dict[str, dict[str, Any]], medians: dict[str, tuple[float |
     for s in STAGES:  # STAGES is in dependency order
         st = stages[s.key]
         if st["state"] == "succeeded":
-            finish[s.key] = parse_ts(st["finished"])
+            # a superseded restart has no finish time: it is done, so it does not hold later stages back
+            finish[s.key] = parse_ts(st["finished"]) or parse_ts(st["started"])
             continue
-        if st["state"] == "not-tracked":
+        if st["state"] in ("not-tracked", "no-record"):
             finish[s.key] = None
             continue
         med, n = medians[s.key]
